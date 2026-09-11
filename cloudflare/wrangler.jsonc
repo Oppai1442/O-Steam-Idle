@@ -31,9 +31,6 @@
     "O_IDLE_AUTO_START": "0",
     "O_IDLE_DEFAULT_APPIDS": ""
   },
-  "secrets": {
-    "required": ["O_IDLE_ACCESS_PASSWORD", "STEAM_REFRESH_TOKEN"]
-  },
   "observability": {
     "enabled": true
   }
