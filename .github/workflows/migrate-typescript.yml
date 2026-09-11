@@ -1,0 +1,459 @@
+name: TypeScript migration
+
+on:
+  push:
+    branches: [ts-migration]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ts-migration
+
+      - name: Migrate sources to TypeScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src client cloudflare/src scripts .github/workflows
+          mv app.js src/server.ts
+          mv public/app.js client/app.ts
+          mv scripts/export-refresh-token.js scripts/export-refresh-token.ts
+          mv cloudflare/src/index.js cloudflare/src/index.ts
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path('src/server.ts')
+          s = p.read_text()
+          s = s.replace("'use strict';\n\n", "'use strict';\n\nimport type { LibraryApp, RuntimeState, SettingsFile } from './types';\n\n", 1)
+          s = s.replace("const ROOT = __dirname;", "const ROOT = path.resolve(__dirname, '..', '..');")
+          s = s.replace("let steam = null;", "let steam: any = null;")
+          s = s.replace("let loginSession = null;", "let loginSession: any = null;")
+          s = s.replace("let webCookies = [];", "let webCookies: string[] = [];")
+          s = s.replace("let library = [];", "let library: LibraryApp[] = [];")
+          s = s.replace("let state = {", "let state: RuntimeState = {")
+          s = s.replace("let manualAppIds = new Set(DEFAULT_APPIDS);", "let manualAppIds = new Set<number>(DEFAULT_APPIDS);")
+          s = s.replace("const x = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));", "const x = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) as SettingsFile;")
+          s = s.replace("function generateLogonID() {", "function generateLogonID(): number {")
+          s = s.replace("function runtimeLog(level, message) {", "function runtimeLog(level: 'INFO' | 'WARN' | 'ERROR', message: string) {")
+          s = s.replace("function ps(script, input = '') {", "function ps(script: string, input = '') {")
+          s = s.replace("function protectToken(token) {", "function protectToken(token: string): Buffer {")
+          s = s.replace("function unprotectToken(buf) {", "function unprotectToken(buf: Buffer): string {")
+          s = s.replace("function saveRefreshToken(token) {", "function saveRefreshToken(token: string) {")
+          s = s.replace("function connectWithRefreshToken(token) {", "function connectWithRefreshToken(token: string) {")
+          s = s.replace("async function beginQRLogin() {", "async function beginQRLogin(): Promise<void> {")
+          s = s.replace("function attachSteamEvents(client) {", "function attachSteamEvents(client: any) {")
+          s = s.replace("function requestText(url, headers = {}, redirectsLeft = 5) {", "function requestText(url: string, headers: Record<string, string> = {}, redirectsLeft = 5): Promise<string> {")
+          s = s.replace("function hoursStringToMinutes(value) {", "function hoursStringToMinutes(value: unknown): number {")
+          s = s.replace("function getProductInfoApps(appids) {", "function getProductInfoApps(appids: unknown[]): Promise<any> {")
+          s = s.replace("async function getManualGames() {", "async function getManualGames(): Promise<any[]> {")
+          s = s.replace("async function getDynamicStoreGames() {", "async function getDynamicStoreGames(): Promise<any[]> {")
+          s = s.replace("function currentSteamAccountId() {", "function currentSteamAccountId(): number | null {")
+          s = s.replace("async function getLocalSteamHistoryGames() {", "async function getLocalSteamHistoryGames(): Promise<any[]> {")
+          s = s.replace("function getUserOwnedApps() {", "function getUserOwnedApps(): Promise<any[]> {")
+          s = s.replace("function waitForOwnershipCached(timeoutMs = 20000) {", "function waitForOwnershipCached(timeoutMs = 20000): Promise<number[]> {")
+          s = s.replace("function waitForWebSession(timeoutMs = 15000) {", "function waitForWebSession(timeoutMs = 15000): Promise<string[]> {")
+          s = s.replace("function startIdle(appids) {", "function startIdle(appids: unknown[]) {")
+          s = s.replace("function json(res, code, body) {", "function json(res: any, code: number, body: any) {")
+          s = s.replace("function readJson(req) {", "function readJson(req: any): Promise<any> {")
+          s = s.replace("function serveStatic(req, res) {", "function serveStatic(req: any, res: any) {")
+          p.write_text(s)
+
+          p = Path('client/app.ts')
+          s = p.read_text()
+          s = s.replace("'use strict';\n\n", "'use strict';\n\nimport type { ClientGame, ClientStatus } from './types';\n\n", 1)
+          s = s.replace("const $ = s => document.querySelector(s);", "const $ = (s: string): any => document.querySelector(s);")
+          s = s.replace("let status = {};", "let status: ClientStatus = {};")
+          s = s.replace("let library = [];", "let library: ClientGame[] = [];")
+          s = s.replace("let selected = new Set();", "let selected = new Set<number>();")
+          s = s.replace("async function api(url, options = {}) {", "async function api(url: string, options: RequestInit = {}): Promise<any> {")
+          s = s.replace("function sourceTags(g) {", "function sourceTags(g: ClientGame): string[] {")
+          p.write_text(s)
+
+          p = Path('cloudflare/src/index.ts')
+          s = p.read_text()
+          s = s.replace("const BASIC_USER = 'o-steam-idle';", "const BASIC_USER = 'o-steam-idle';\n\ninterface Env {\n  O_IDLE_ACCESS_PASSWORD: string;\n  O_IDLE_AUTO_START?: string;\n  O_IDLE_DEFAULT_APPIDS?: string;\n  STEAM_REFRESH_TOKEN?: string;\n  O_STEAM_IDLE: any;\n}\n\nconst runtimeEnv = workerEnv as unknown as Env;")
+          s = s.replace("workerEnv.O_IDLE_AUTO_START", "runtimeEnv.O_IDLE_AUTO_START")
+          s = s.replace("workerEnv.O_IDLE_DEFAULT_APPIDS", "runtimeEnv.O_IDLE_DEFAULT_APPIDS")
+          s = s.replace("workerEnv.STEAM_REFRESH_TOKEN", "runtimeEnv.STEAM_REFRESH_TOKEN")
+          s = s.replace("  onStop({ exitCode, reason }) {", "  onStop({ exitCode, reason }: { exitCode?: number; reason?: string }) {")
+          s = s.replace("function unauthorized() {", "function unauthorized(): Response {")
+          s = s.replace("function isAuthorized(request, password) {", "function isAuthorized(request: Request, password?: string): boolean {")
+          s = s.replace("  async fetch(request, env) {", "  async fetch(request: Request, env: Env): Promise<Response> {")
+          p.write_text(s)
+
+          root = json.load(open('package.json'))
+          root['version'] = '0.3.0'
+          root['main'] = 'dist/src/server.js'
+          root['scripts'] = {
+            'clean': 'node -e "require(\\\'fs\\\').rmSync(\\\'dist\\\',{recursive:true,force:true});require(\\\'fs\\\').rmSync(\\\'public/app.js\\\',{force:true})"',
+            'build:server': 'tsc -p tsconfig.json',
+            'build:client': 'esbuild client/app.ts --bundle --platform=browser --target=es2020 --format=iife --outfile=public/app.js',
+            'build': 'npm run clean && npm run build:server && npm run build:client',
+            'typecheck': 'tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit',
+            'typecheck:all': 'npm run typecheck && npm --prefix cloudflare run typecheck',
+            'start': 'npm run build && node dist/src/server.js',
+            'start:built': 'node dist/src/server.js',
+            'token:export': 'npm run build:server && node dist/scripts/export-refresh-token.js'
+          }
+          root['devDependencies'] = {
+            '@types/node': '^22.10.0',
+            'esbuild': '^0.25.0',
+            'typescript': '^5.9.2'
+          }
+          Path('package.json').write_text(json.dumps(root, indent=2) + '\n')
+
+          cf = json.load(open('cloudflare/package.json'))
+          cf['version'] = '0.3.0'
+          cf['scripts']['typecheck'] = 'tsc -p tsconfig.json --noEmit'
+          cf['devDependencies'] = {
+            **cf.get('devDependencies', {}),
+            'typescript': '^5.9.2',
+            '@cloudflare/workers-types': '^4.20250906.0'
+          }
+          Path('cloudflare/package.json').write_text(json.dumps(cf, indent=2) + '\n')
+
+          p = Path('cloudflare/wrangler.jsonc')
+          p.write_text(p.read_text().replace('"main": "src/index.js"', '"main": "src/index.ts"'))
+
+          p = Path('README.md')
+          s = p.read_text()
+          s = s.replace('The UI is intentionally dependency-free: plain HTML/CSS/JS, no frontend framework, no external font bundle, and no heavy visual effects.', 'The runtime UI stays intentionally lightweight: plain HTML/CSS with a small TypeScript client bundle, no frontend framework, no external font bundle, and no heavy visual effects.')
+          s = s.replace('Or run it manually:\n\n```powershell\nnpm install\nnpm start\n```', 'Or run it manually:\n\n```powershell\nnpm install\nnpm start\n```\n\n`npm start` compiles the TypeScript backend and browser client, then launches `dist/src/server.js`. For CI or development checks, use `npm run typecheck` and `npm run build`.')
+          old = '''## Project layout\n\n```text\napp.js                     Node / Steam backend\npublic/                    Lightweight gaming UI\nscripts/export-refresh-token.js\nDockerfile                 Container image\ncloudflare/                Worker + Container deployment\n  src/index.js\n  wrangler.jsonc\ndocs/CLOUDFLARE.md         Cloud setup guide\n```'''
+          new = '''## TypeScript layout\n\nThe project is source-first TypeScript. Generated JavaScript lives in `dist/` and `public/app.js` and is intentionally ignored by git.\n\n```text\nsrc/\n  server.ts                Node / Steam backend\n  types.ts                 Backend state/library contracts\nclient/\n  app.ts                   Lightweight browser controller\n  types.ts                 Browser-side API contracts\npublic/\n  index.html\n  style.css\n  app.js                   generated by esbuild (gitignored)\nscripts/\n  export-refresh-token.ts\nDockerfile                 multi-stage TypeScript build\ncloudflare/\n  src/index.ts             Worker + Container router\n  tsconfig.json\n  wrangler.jsonc\ndocs/CLOUDFLARE.md         Cloud setup guide\n```\n\nThe backend is compiled with `tsc`; the browser client is bundled with `esbuild`; Wrangler compiles the Cloudflare Worker TypeScript directly.'''
+          s = s.replace(old, new)
+          p.write_text(s)
+
+          p = Path('docs/CLOUDFLARE.md')
+          s = p.read_text()
+          s = s.replace('The Worker is the public control-plane endpoint; the Node process inside the container keeps the Steam CM session alive.', 'The Worker is the public control-plane endpoint; the compiled TypeScript Node process inside the container keeps the Steam CM session alive.')
+          s = s.replace('Wrangler builds `../Dockerfile`, pushes the image, deploys the Worker, and prints a `workers.dev` URL.', 'Wrangler builds `../Dockerfile`; the Docker build compiles the TypeScript backend/client in a build stage, then ships only the production runtime into the final image. Wrangler then pushes the image, deploys the TypeScript Worker, and prints a `workers.dev` URL.')
+          p.write_text(s)
+          PY
+
+          cat > src/types.ts <<'EOF'
+          export type RuntimeMode = 'local' | 'cloud';
+          export type QrStatus = 'idle' | 'creating' | 'waiting' | 'scanned' | 'approved' | 'done' | 'timeout' | 'error';
+
+          export interface LibraryApp {
+            appid: number;
+            name: string;
+            playtime: number;
+            lastPlayed: number;
+            icon: string | null;
+            discoveredViaProfile?: boolean;
+            discoveredViaDynamicStore?: boolean;
+            discoveredViaLocalSteam?: boolean;
+            discoveredViaManual?: boolean;
+            manualType?: string | null;
+            hasCards: boolean | null;
+            cardDrops: number | null;
+          }
+
+          export interface LastDisconnect {
+            at: number;
+            eresult: number;
+            message: string | null;
+          }
+
+          export interface RuntimeState {
+            connected: boolean;
+            connecting: boolean;
+            qrDataUrl: string | null;
+            qrStatus: QrStatus;
+            steamID: string | null;
+            accountName: string | null;
+            selected: number[];
+            idling: number[];
+            libraryReady: boolean;
+            libraryError: string | null;
+            cardScanReady: boolean;
+            cardScanRunning: boolean;
+            cardScanError: string | null;
+            cardGames: number;
+            cardDropsRemaining: number;
+            message: string;
+            externalPlaying: boolean;
+            externalPlayingApp: number;
+            idleSuspended: boolean;
+            sessionConflict: boolean;
+            reconnecting: boolean;
+            reconnectCount: number;
+            lastDisconnect: LastDisconnect | null;
+            lastConnectedAt: number | null;
+            idleWanted: boolean;
+            desiredIdling: number[];
+            shuttingDown: boolean;
+            runtimeMode: RuntimeMode;
+          }
+
+          export interface SettingsFile {
+            selected?: unknown[];
+            manualAppIds?: unknown[];
+            logonID?: unknown;
+          }
+          EOF
+
+          cat > client/types.ts <<'EOF'
+          export interface ClientGame {
+            appid: number;
+            name: string;
+            playtime: number;
+            lastPlayed: number;
+            icon: string | null;
+            discoveredViaProfile?: boolean;
+            discoveredViaLocalSteam?: boolean;
+            discoveredViaManual?: boolean;
+            hasCards: boolean | null;
+            cardDrops: number | null;
+          }
+
+          export interface ClientStatus {
+            runtimeMode?: 'local' | 'cloud';
+            accountName?: string | null;
+            connected?: boolean;
+            connecting?: boolean;
+            reconnecting?: boolean;
+            sessionConflict?: boolean;
+            externalPlaying?: boolean;
+            externalPlayingApp?: number;
+            reconnectCount?: number;
+            idleWanted?: boolean;
+            idling?: number[];
+            selected?: number[];
+            hasSavedLogin?: boolean;
+            qrDataUrl?: string | null;
+            qrStatus?: string;
+            libraryCount?: number;
+            libraryReady?: boolean;
+            libraryError?: string | null;
+            cardScanReady?: boolean;
+            cardScanRunning?: boolean;
+            cardScanError?: string | null;
+            cardGames?: number;
+            cardDropsRemaining?: number;
+            message?: string;
+          }
+          EOF
+
+          cat > tsconfig.json <<'EOF'
+          {
+            "compilerOptions": {
+              "target": "ES2022",
+              "module": "CommonJS",
+              "moduleResolution": "Node",
+              "rootDir": ".",
+              "outDir": "dist",
+              "strict": false,
+              "esModuleInterop": true,
+              "resolveJsonModule": true,
+              "skipLibCheck": true,
+              "forceConsistentCasingInFileNames": true,
+              "types": ["node"],
+              "sourceMap": true
+            },
+            "include": ["src/**/*.ts", "scripts/**/*.ts"],
+            "exclude": ["node_modules", "dist", "cloudflare", "client", "public"]
+          }
+          EOF
+
+          cat > tsconfig.client.json <<'EOF'
+          {
+            "compilerOptions": {
+              "target": "ES2020",
+              "module": "ESNext",
+              "moduleResolution": "Bundler",
+              "strict": false,
+              "noEmit": true,
+              "skipLibCheck": true,
+              "lib": ["ES2020", "DOM", "DOM.Iterable"]
+            },
+            "include": ["client/**/*.ts"]
+          }
+          EOF
+
+          cat > cloudflare/tsconfig.json <<'EOF'
+          {
+            "compilerOptions": {
+              "target": "ES2022",
+              "module": "ESNext",
+              "moduleResolution": "Bundler",
+              "strict": true,
+              "noEmit": true,
+              "skipLibCheck": true,
+              "types": ["@cloudflare/workers-types"]
+            },
+            "include": ["src/**/*.ts"]
+          }
+          EOF
+
+          cat > Dockerfile <<'EOF'
+          FROM node:22-bookworm-slim AS build
+          WORKDIR /app
+          COPY package.json ./
+          RUN npm install --no-audit --no-fund
+          COPY tsconfig.json tsconfig.client.json ./
+          COPY src ./src
+          COPY client ./client
+          COPY scripts ./scripts
+          COPY public ./public
+          RUN npm run build
+
+          FROM node:22-bookworm-slim AS runtime
+          WORKDIR /app
+          ENV NODE_ENV=production \
+              PORT=3210 \
+              O_IDLE_HOST=0.0.0.0 \
+              O_IDLE_CLOUD=1 \
+              O_IDLE_DISABLE_BROWSER=1
+          COPY package.json ./
+          RUN npm install --omit=dev --no-audit --no-fund
+          COPY --from=build /app/dist ./dist
+          COPY --from=build /app/public ./public
+          RUN mkdir -p /app/data
+          EXPOSE 3210
+          CMD ["node", "dist/src/server.js"]
+          EOF
+
+          cat > .gitignore <<'EOF'
+          node_modules/
+          cloudflare/node_modules/
+          dist/
+          public/app.js
+          data/*
+          !data/.gitkeep
+          *.log
+          .env
+          .env.*
+          .wrangler/
+          .DS_Store
+          EOF
+
+          cat > start.bat <<'EOF'
+          @echo off
+          cd /d "%~dp0"
+          title O-Steam-Idle
+          node -e "require.resolve('steam-user');require.resolve('steam-session');require.resolve('qrcode');require.resolve('cheerio');require.resolve('typescript');require.resolve('esbuild')" >nul 2>&1
+          if errorlevel 1 (
+            echo Installing/updating O-Steam-Idle dependencies...
+            call npm install
+            if errorlevel 1 pause & exit /b 1
+          )
+          call npm run build
+          if errorlevel 1 pause & exit /b 1
+          node dist\src\server.js
+          if errorlevel 1 pause
+          EOF
+
+          cat > start-hidden.vbs <<'EOF'
+          Option Explicit
+          Dim shell, fso, baseDir, cmd
+          Set shell = CreateObject("WScript.Shell")
+          Set fso = CreateObject("Scripting.FileSystemObject")
+          baseDir = fso.GetParentFolderName(WScript.ScriptFullName)
+          shell.CurrentDirectory = baseDir
+          If Not fso.FolderExists(fso.BuildPath(baseDir, "node_modules")) Then
+            MsgBox "node_modules is missing. Run start.bat once first so npm install can complete.", vbExclamation, "O-Steam-Idle"
+            WScript.Quit 1
+          End If
+          cmd = "cmd.exe /d /c npm run build && node dist\src\server.js"
+          shell.Run cmd, 0, False
+          EOF
+
+          cat > .github/workflows/ci.yml <<'EOF'
+          name: CI
+          on:
+            push:
+              branches: [main]
+            pull_request:
+          permissions:
+            contents: read
+          jobs:
+            typecheck-build:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                - uses: actions/setup-node@v4
+                  with:
+                    node-version: 22
+                    cache: npm
+                - name: Install root dependencies
+                  run: npm install --no-audit --no-fund
+                - name: Typecheck backend and client
+                  run: npm run typecheck
+                - name: Build local runtime
+                  run: npm run build
+                - name: Smoke-test HTTP server
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    O_IDLE_DISABLE_BROWSER=1 node dist/src/server.js > /tmp/o-steam-idle.log 2>&1 &
+                    pid=$!
+                    trap 'kill "$pid" 2>/dev/null || true' EXIT
+                    for i in {1..20}; do
+                      if curl --fail --silent http://127.0.0.1:3210/health | grep -q '^ok$'; then
+                        exit 0
+                      fi
+                      sleep 0.25
+                    done
+                    cat /tmp/o-steam-idle.log
+                    exit 1
+                - name: Install Cloudflare dependencies
+                  working-directory: cloudflare
+                  run: npm install --no-audit --no-fund
+                - name: Typecheck Cloudflare Worker
+                  working-directory: cloudflare
+                  run: npm run typecheck
+          EOF
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install and typecheck local runtime
+        run: |
+          npm install --no-audit --no-fund
+          npm run typecheck
+          npm run build
+
+      - name: Smoke-test local HTTP server
+        shell: bash
+        run: |
+          set -euo pipefail
+          O_IDLE_DISABLE_BROWSER=1 node dist/src/server.js > /tmp/o-steam-idle.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:3210/health | grep -q '^ok$'; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          cat /tmp/o-steam-idle.log
+          exit 1
+
+      - name: Typecheck Cloudflare Worker
+        working-directory: cloudflare
+        run: |
+          npm install --no-audit --no-fund
+          npm run typecheck
+
+      - name: Commit migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/migrate-typescript.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "refactor: migrate O-Steam-Idle to TypeScript"
+          git push origin HEAD:ts-migration
