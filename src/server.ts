@@ -1,5 +1,7 @@
 'use strict';
 
+import type { LibraryApp, RuntimeState, SettingsFile } from './types';
+
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
@@ -21,7 +23,7 @@ const DEFAULT_APPIDS = [...new Set(String(process.env.O_IDLE_DEFAULT_APPIDS || '
   .split(/[^0-9]+/)
   .map(Number)
   .filter(x => Number.isInteger(x) && x > 0))];
-const ROOT = __dirname;
+const ROOT = path.resolve(__dirname, '..', '..');
 const PUBLIC = path.join(ROOT, 'public');
 const DATA = path.join(ROOT, 'data');
 const CRED_FILE = path.join(DATA, 'credentials.dat');
@@ -31,11 +33,11 @@ const IDLE_RESTORE_DELAY_MS = 2500;
 const LOG_FILE = path.join(DATA, 'runtime.log');
 fs.mkdirSync(DATA, { recursive: true });
 
-let steam = null;
-let loginSession = null;
-let webCookies = [];
-let library = [];
-let state = {
+let steam: any = null;
+let loginSession: any = null;
+let webCookies: string[] = [];
+let library: LibraryApp[] = [];
+let state: RuntimeState = {
   connected: false,
   connecting: false,
   qrDataUrl: null,
@@ -67,9 +69,9 @@ let state = {
 };
 
 let steamLogonID = 0;
-let manualAppIds = new Set(DEFAULT_APPIDS);
+let manualAppIds = new Set<number>(DEFAULT_APPIDS);
 
-function generateLogonID() {
+function generateLogonID(): number {
   let id = crypto.randomBytes(4).readUInt32LE(0) >>> 0;
   if (!id) id = 1442;
   return id;
@@ -77,7 +79,7 @@ function generateLogonID() {
 
 function loadSettings() {
   try {
-    const x = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
+    const x = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) as SettingsFile;
     state.selected = Array.isArray(x.selected) ? x.selected.map(Number).filter(Number.isFinite) : [];
     if (Array.isArray(x.manualAppIds)) {
       for (const id of x.manualAppIds.map(Number)) {
@@ -110,7 +112,7 @@ try {
   }
 } catch (_) {}
 
-function runtimeLog(level, message) {
+function runtimeLog(level: 'INFO' | 'WARN' | 'ERROR', message: string) {
   const line = `[${new Date().toISOString()}] [${level}] ${message}`;
   if (level === 'ERROR') console.error(line);
   else if (level === 'WARN') console.warn(line);
@@ -164,7 +166,7 @@ function scheduleIdleRestore(client, reason = 'reconnect') {
   }, IDLE_RESTORE_DELAY_MS);
 }
 
-function ps(script, input = '') {
+function ps(script: string, input = '') {
   return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
     input,
     encoding: 'utf8',
@@ -173,7 +175,7 @@ function ps(script, input = '') {
   });
 }
 
-function protectToken(token) {
+function protectToken(token: string): Buffer {
   if (process.platform !== 'win32') {
     return Buffer.from(JSON.stringify({ mode: 'plain', token }), 'utf8');
   }
@@ -190,7 +192,7 @@ function protectToken(token) {
   return Buffer.from(JSON.stringify({ mode: 'dpapi', blob: r.stdout.trim() }), 'utf8');
 }
 
-function unprotectToken(buf) {
+function unprotectToken(buf: Buffer): string {
   const payload = JSON.parse(buf.toString('utf8'));
   if (payload.mode === 'plain') return payload.token;
   if (payload.mode !== 'dpapi' || process.platform !== 'win32') throw new Error('Unsupported credential format');
@@ -207,7 +209,7 @@ function unprotectToken(buf) {
   return r.stdout;
 }
 
-function saveRefreshToken(token) {
+function saveRefreshToken(token: string) {
   // Local mode persists with DPAPI on Windows. Cloud containers may also keep a
   // temporary copy on ephemeral disk, while the durable source should remain a
   // Cloudflare Worker secret (STEAM_REFRESH_TOKEN).
@@ -237,7 +239,7 @@ function sanitizeState() {
   };
 }
 
-function attachSteamEvents(client) {
+function attachSteamEvents(client: any) {
   client.on('webSession', (_sessionID, cookies) => {
     webCookies = Array.isArray(cookies) ? cookies.slice() : [];
   });
@@ -391,7 +393,7 @@ function disposeSteamClient() {
   steam = null;
 }
 
-function connectWithRefreshToken(token) {
+function connectWithRefreshToken(token: string) {
   if (state.connected || state.connecting) return;
   disposeSteamClient();
 
@@ -413,7 +415,7 @@ function connectWithRefreshToken(token) {
   });
 }
 
-async function beginQRLogin() {
+async function beginQRLogin(): Promise<void> {
   if (state.connected || state.connecting) throw new Error('Steam client is already connected/connecting');
   if (loginSession) {
     try { loginSession.cancelLoginAttempt(); } catch (_) {}
@@ -470,7 +472,7 @@ async function beginQRLogin() {
 }
 
 
-function requestText(url, headers = {}, redirectsLeft = 5) {
+function requestText(url: string, headers: Record<string, string> = {}, redirectsLeft = 5): Promise<string> {
   return new Promise((resolve, reject) => {
     let target;
     try { target = new URL(url); } catch (err) { return reject(err); }
@@ -538,7 +540,7 @@ function extractJsonArrayAfterMarker(text, marker) {
   return null;
 }
 
-function hoursStringToMinutes(value) {
+function hoursStringToMinutes(value: unknown): number {
   if (value == null) return 0;
   const n = Number(String(value).replace(/,/g, '').replace(/\s*hrs?.*$/i, '').trim());
   return Number.isFinite(n) ? Math.round(n * 60) : 0;
@@ -608,7 +610,7 @@ async function getProfilePlayedApps() {
 
 
 
-function getProductInfoApps(appids) {
+function getProductInfoApps(appids: unknown[]): Promise<any> {
   const ids = [...new Set((appids || []).map(Number).filter(x => Number.isInteger(x) && x > 0))];
   if (!ids.length) return Promise.resolve({});
   return new Promise((resolve, reject) => {
@@ -619,7 +621,7 @@ function getProductInfoApps(appids) {
   });
 }
 
-async function getManualGames() {
+async function getManualGames(): Promise<any[]> {
   const ids = [...manualAppIds];
   if (!ids.length) return [];
   let info = {};
@@ -641,7 +643,7 @@ async function getManualGames() {
   });
 }
 
-async function getDynamicStoreGames() {
+async function getDynamicStoreGames(): Promise<any[]> {
   const cookies = await waitForWebSession();
   const raw = await requestText('https://store.steampowered.com/dynamicstore/userdata/?l=english', {
     'Cookie': cookies.join('; '),
@@ -651,7 +653,7 @@ async function getDynamicStoreGames() {
   let data;
   try { data = JSON.parse(raw); }
   catch (_) { throw new Error('dynamicstore/userdata returned non-JSON data'); }
-  const ids = [...new Set((data?.rgOwnedApps || []).map(Number).filter(x => Number.isInteger(x) && x > 0))];
+  const ids: number[] = [...new Set<number>((data?.rgOwnedApps || []).map(Number).filter((x: number) => Number.isInteger(x) && x > 0))];
   if (!ids.length) return [];
 
   const info = await getProductInfoApps(ids);
@@ -714,7 +716,7 @@ function extractAppsSection(text) {
   return '';
 }
 
-function currentSteamAccountId() {
+function currentSteamAccountId(): number | null {
   if (!steam?.steamID) return null;
   try {
     const direct = Number(steam.steamID.accountid);
@@ -771,7 +773,7 @@ function parseLocalAppsWithEvidence(section) {
   return out;
 }
 
-async function getLocalSteamHistoryGames() {
+async function getLocalSteamHistoryGames(): Promise<any[]> {
   if (process.platform !== 'win32') return [];
   const accountId = currentSteamAccountId();
   if (!accountId) throw new Error('Could not resolve current Steam account id');
@@ -816,7 +818,7 @@ async function getLocalSteamHistoryGames() {
   return games;
 }
 
-function getUserOwnedApps() {
+function getUserOwnedApps(): Promise<any[]> {
   return new Promise((resolve, reject) => {
     if (!steam?.steamID) return reject(new Error('Not connected'));
     steam.getUserOwnedApps(steam.steamID, { includePlayedFreeGames: true, includeFreeSub: true }, (err, result) => {
@@ -827,7 +829,7 @@ function getUserOwnedApps() {
   });
 }
 
-function waitForOwnershipCached(timeoutMs = 20000) {
+function waitForOwnershipCached(timeoutMs = 20000): Promise<number[]> {
   if (!steam) return Promise.reject(new Error('Not connected'));
   try {
     const existing = steam.getOwnedApps();
@@ -975,7 +977,7 @@ async function refreshLibrary() {
   return library;
 }
 
-function waitForWebSession(timeoutMs = 15000) {
+function waitForWebSession(timeoutMs = 15000): Promise<string[]> {
   if (webCookies.length) return Promise.resolve(webCookies);
   if (!steam || !state.connected) return Promise.reject(new Error('Not connected to Steam'));
   return new Promise((resolve, reject) => {
@@ -1082,7 +1084,7 @@ async function refreshCardData() {
   }
 }
 
-function startIdle(appids) {
+function startIdle(appids: unknown[]) {
   if (!state.connected || !steam) throw new Error('Not connected to Steam');
 
   if (steam.playingState?.blocked || state.externalPlaying) {
@@ -1204,7 +1206,7 @@ function gracefulShutdown(reason = 'shutdown') {
   }
 }
 
-function json(res, code, body) {
+function json(res: any, code: number, body: any) {
   const data = Buffer.from(JSON.stringify(body));
   res.writeHead(code, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -1216,7 +1218,7 @@ function json(res, code, body) {
   res.end(data);
 }
 
-function readJson(req) {
+function readJson(req: any): Promise<any> {
   return new Promise((resolve, reject) => {
     let data = '';
     req.on('data', c => {
@@ -1231,7 +1233,7 @@ function readJson(req) {
   });
 }
 
-function serveStatic(req, res) {
+function serveStatic(req: any, res: any) {
   let p = req.url === '/' ? '/index.html' : req.url;
   p = p.split('?')[0];
   const file = path.normalize(path.join(PUBLIC, p));
@@ -1290,7 +1292,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && req.url === '/api/selection') {
       const body = await readJson(req);
-      state.selected = [...new Set((body.appids || []).map(Number).filter(Number.isFinite))];
+      state.selected = [...new Set<number>((body.appids || []).map(Number).filter((x: number) => Number.isFinite(x)))];
       saveSettings();
       return json(res, 200, { ok: true });
     }
@@ -1375,7 +1377,7 @@ setInterval(() => {
 
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('unhandledRejection', err => runtimeLog('ERROR', `Unhandled rejection: ${err?.stack || err}`));
+process.on('unhandledRejection', (err: any) => runtimeLog('ERROR', `Unhandled rejection: ${err?.stack || err}`));
 process.on('uncaughtException', err => {
   runtimeLog('ERROR', `Uncaught exception: ${err?.stack || err}`);
   gracefulShutdown('uncaughtException');

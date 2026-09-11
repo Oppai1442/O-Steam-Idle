@@ -3,6 +3,16 @@ import { env as workerEnv } from 'cloudflare:workers';
 
 const BASIC_USER = 'o-steam-idle';
 
+interface Env {
+  O_IDLE_ACCESS_PASSWORD: string;
+  O_IDLE_AUTO_START?: string;
+  O_IDLE_DEFAULT_APPIDS?: string;
+  STEAM_REFRESH_TOKEN?: string;
+  O_STEAM_IDLE: any;
+}
+
+const runtimeEnv = workerEnv as unknown as Env;
+
 export class OSteamIdleContainer extends Container {
   defaultPort = 3210;
   sleepAfter = '1h';
@@ -11,9 +21,9 @@ export class OSteamIdleContainer extends Container {
     O_IDLE_CLOUD: '1',
     O_IDLE_HOST: '0.0.0.0',
     O_IDLE_DISABLE_BROWSER: '1',
-    O_IDLE_AUTO_START: workerEnv.O_IDLE_AUTO_START || '0',
-    O_IDLE_DEFAULT_APPIDS: workerEnv.O_IDLE_DEFAULT_APPIDS || '',
-    STEAM_REFRESH_TOKEN: workerEnv.STEAM_REFRESH_TOKEN || ''
+    O_IDLE_AUTO_START: runtimeEnv.O_IDLE_AUTO_START || '0',
+    O_IDLE_DEFAULT_APPIDS: runtimeEnv.O_IDLE_DEFAULT_APPIDS || '',
+    STEAM_REFRESH_TOKEN: runtimeEnv.STEAM_REFRESH_TOKEN || ''
   };
 
   async onActivityExpired() {
@@ -26,12 +36,12 @@ export class OSteamIdleContainer extends Container {
     console.log('O-Steam-Idle container started');
   }
 
-  onStop({ exitCode, reason }) {
+  onStop({ exitCode, reason }: { exitCode?: number; reason?: string }) {
     console.log('O-Steam-Idle container stopped', { exitCode, reason });
   }
 }
 
-function unauthorized() {
+function unauthorized(): Response {
   return new Response('Authentication required', {
     status: 401,
     headers: {
@@ -42,7 +52,7 @@ function unauthorized() {
   });
 }
 
-function isAuthorized(request, password) {
+function isAuthorized(request: Request, password?: string): boolean {
   if (!password) return false;
   const header = request.headers.get('Authorization') || '';
   if (!header.startsWith('Basic ')) return false;
@@ -59,7 +69,7 @@ function isAuthorized(request, password) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request: Request, env: Env): Promise<Response> {
     if (!isAuthorized(request, env.O_IDLE_ACCESS_PASSWORD)) return unauthorized();
 
     const container = getContainer(env.O_STEAM_IDLE, 'primary');

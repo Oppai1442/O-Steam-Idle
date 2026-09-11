@@ -1,6 +1,6 @@
 # Cloudflare Container deployment
 
-O-Steam-Idle can run as one long-lived Cloudflare Container behind a Worker. The Worker is the public control-plane endpoint; the Node process inside the container keeps the Steam CM session alive.
+O-Steam-Idle can run as one long-lived Cloudflare Container behind a Worker. The Worker is the public control-plane endpoint; the compiled TypeScript Node process inside the container keeps the Steam CM session alive.
 
 > Cloudflare Containers require a Workers Paid plan. Docker must be running when `wrangler deploy` builds the image.
 
@@ -89,7 +89,7 @@ docker info
 npx wrangler deploy
 ```
 
-Wrangler builds `../Dockerfile`, pushes the image, deploys the Worker, and prints a `workers.dev` URL. The first container provisioning can take a few minutes.
+Wrangler builds `../Dockerfile`; the Docker build compiles the TypeScript backend/client in a build stage, then ships only the production runtime into the final image. Wrangler then pushes the image, deploys the TypeScript Worker, and prints a `workers.dev` URL. The first container provisioning can take a few minutes.
 
 Open the URL and authenticate with:
 

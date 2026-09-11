@@ -1,9 +1,11 @@
 node_modules/
 cloudflare/node_modules/
-cloudflare/.wrangler/
-.dev.vars*
-.env*
+dist/
+public/app.js
 data/*
 !data/.gitkeep
-npm-debug.log*
-*.zip
+*.log
+.env
+.env.*
+.wrangler/
+.DS_Store

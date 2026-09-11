@@ -1,17 +1,29 @@
 {
   "name": "o-steam-idle",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Local-first Steam playtime idler with card visibility and Cloudflare Container deployment support",
-  "main": "app.js",
+  "main": "dist/src/server.js",
   "scripts": {
-    "start": "node app.js",
-    "token:export": "node scripts/export-refresh-token.js"
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true});require('fs').rmSync('public/app.js',{force:true})\"",
+    "build:server": "tsc -p tsconfig.json",
+    "build:client": "esbuild client/app.ts --bundle --platform=browser --target=es2020 --format=iife --outfile=public/app.js",
+    "build": "npm run clean && npm run build:server && npm run build:client",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "typecheck:all": "npm run typecheck && npm --prefix cloudflare run typecheck",
+    "start": "npm run build && node dist/src/server.js",
+    "start:built": "node dist/src/server.js",
+    "token:export": "npm run build:server && node dist/scripts/export-refresh-token.js"
   },
   "dependencies": {
     "cheerio": "1.0.0",
     "qrcode": "^1.5.4",
     "steam-session": "^1.9.4",
     "steam-user": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.2"
   }
 }
