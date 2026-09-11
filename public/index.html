@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#070b11">
+  <title>O-Steam-Idle</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"></div>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span>O</span></div>
+        <div>
+          <div class="brand-line"><strong>O-Steam-Idle</strong><span class="version">v0.2.0</span></div>
+          <div class="brand-sub">Steam presence controller · local first · cloud ready</div>
+        </div>
+      </div>
+      <div class="runtime-cluster">
+        <span id="runtimeMode" class="runtime-badge">LOCAL</span>
+        <div id="connection" class="connection"><i></i><span>Offline</span></div>
+      </div>
+    </header>
+
+    <section class="command-panel">
+      <div class="command-main">
+        <div class="eyebrow">STEAM LINK</div>
+        <h1 id="accountTitle">No active session</h1>
+        <p id="authText" class="muted">Authenticate once with Steam Mobile QR or use the saved refresh token.</p>
+        <div class="command-actions">
+          <button id="qrBtn" class="btn btn-primary"><span class="btn-icon">▣</span>Login with QR</button>
+          <button id="savedBtn" class="btn hidden"><span class="btn-icon">↻</span>Use saved login</button>
+          <button id="logoutBtn" class="btn btn-danger hidden">Logout & forget token</button>
+        </div>
+      </div>
+      <div class="command-side">
+        <div class="telemetry">
+          <div><span>STATE</span><strong id="stateText">READY</strong></div>
+          <div><span>SESSION</span><strong id="sessionText">IDLE</strong></div>
+          <div><span>RECONNECTS</span><strong id="reconnectCount">0</strong></div>
+        </div>
+        <div id="qrWrap" class="qr-wrap hidden">
+          <img id="qr" alt="Steam QR code">
+          <div id="qrHint" class="qr-hint">Scan with Steam Mobile</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="stats" aria-label="Library statistics">
+      <div class="stat"><span>LIBRARY</span><strong id="libraryCount">0</strong></div>
+      <div class="stat"><span>VISIBLE</span><strong id="visibleCount">0</strong></div>
+      <div class="stat accent"><span>SELECTED</span><strong id="selectedCount">0</strong></div>
+      <div class="stat live"><span>IDLING</span><strong id="idlingCount">0</strong></div>
+      <div class="stat"><span>CARD GAMES</span><strong id="cardGamesCount">0</strong></div>
+      <div class="stat amber"><span>DROPS LEFT</span><strong id="cardDropsCount">0</strong></div>
+    </section>
+
+    <section class="control-deck">
+      <div class="search-box">
+        <span class="search-icon">⌕</span>
+        <input id="search" type="search" placeholder="Search game or AppID" autocomplete="off">
+      </div>
+      <select id="filter" aria-label="Filter games">
+        <option value="all">All games</option>
+        <option value="selected">Selected</option>
+        <option value="played">Played</option>
+        <option value="never">Never played</option>
+        <option value="manual">Manual AppIDs</option>
+        <option value="cards">Has trading cards</option>
+        <option value="drops">Card drops remaining</option>
+        <option value="nodrops">Cards · no drops left</option>
+        <option value="cardunknown">Card status unknown</option>
+      </select>
+      <select id="sort" aria-label="Sort games">
+        <option value="name">Sort · Name</option>
+        <option value="playtime">Sort · Playtime</option>
+        <option value="recent">Sort · Recent</option>
+        <option value="appid">Sort · AppID</option>
+        <option value="drops">Sort · Card drops</option>
+      </select>
+      <button id="refreshBtn" class="btn btn-compact">Refresh all</button>
+      <button id="refreshCardsBtn" class="btn btn-compact">Cards only</button>
+    </section>
+
+    <section class="action-deck">
+      <div class="action-group">
+        <button id="selectVisibleBtn" class="btn btn-ghost">Select visible</button>
+        <button id="selectDropsBtn" class="btn btn-ghost">Select drops</button>
+        <button id="clearBtn" class="btn btn-ghost">Clear</button>
+        <button id="manualBtn" class="btn btn-ghost">+ AppID</button>
+        <button id="copyBtn" class="btn btn-ghost">Copy AppIDs</button>
+      </div>
+      <div class="action-group primary-actions">
+        <button id="exitBtn" class="btn btn-danger">Exit server</button>
+        <button id="stopBtn" class="btn btn-stop">Stop</button>
+        <button id="startBtn" class="btn btn-start"><span class="play-triangle">▶</span>Start idle</button>
+      </div>
+    </section>
+
+    <div id="notice" class="notice"><span class="notice-led"></span><span>Ready</span></div>
+
+    <section class="library-panel">
+      <div class="library-head">
+        <div>GAME</div>
+        <div>PLAYTIME</div>
+        <div>CARDS</div>
+        <div>STATE</div>
+      </div>
+      <div id="games" class="games"></div>
+      <div id="emptyState" class="empty hidden">
+        <strong>No matching games</strong>
+        <span>Change the search/filter or add a manual AppID.</span>
+      </div>
+    </section>
+
+    <footer>
+      <span>O-Project / O-Steam-Idle</span>
+      <span>Unofficial Steam utility · not affiliated with Valve</span>
+    </footer>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

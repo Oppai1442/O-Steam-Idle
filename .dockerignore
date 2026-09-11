@@ -1,0 +1,9 @@
+.git
+.github
+node_modules
+data/*
+!data/.gitkeep
+cloudflare/node_modules
+cloudflare/.wrangler
+*.zip
+*.log

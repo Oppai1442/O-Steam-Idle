@@ -1,0 +1,9 @@
+node_modules/
+cloudflare/node_modules/
+cloudflare/.wrangler/
+.dev.vars*
+.env*
+data/*
+!data/.gitkeep
+npm-debug.log*
+*.zip

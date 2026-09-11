@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "o-steam-idle",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "containers": [
+    {
+      "class_name": "OSteamIdleContainer",
+      "image": "../Dockerfile",
+      "image_build_context": "..",
+      "max_instances": 1,
+      "instance_type": "lite"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "O_STEAM_IDLE",
+        "class_name": "OSteamIdleContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["OSteamIdleContainer"]
+    }
+  ],
+  "vars": {
+    "O_IDLE_AUTO_START": "0",
+    "O_IDLE_DEFAULT_APPIDS": ""
+  },
+  "secrets": {
+    "required": ["O_IDLE_ACCESS_PASSWORD", "STEAM_REFRESH_TOKEN"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}
