@@ -281,6 +281,9 @@ select { cursor: pointer; }
 .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 720; color: #dfeaf5; }
 .meta { margin-top: 4px; display: flex; gap: 6px; align-items: center; min-width: 0; color: #60738b; font-size: 10px; }
 .meta-chip { border: 1px solid #20344a; padding: 1px 4px; color: #6f87a0; font-size: 9px; text-transform: uppercase; }
+.priority-toggle { border: 1px solid #2a3440; padding: 1px 5px; color: #63758b; font-size: 9px; font-weight: 800; letter-spacing: .04em; cursor: pointer; user-select: none; }
+.priority-toggle:hover { color: var(--amber); border-color: rgba(245,183,75,.4); }
+.priority-toggle.on { color: var(--amber); border-color: rgba(245,183,75,.45); background: rgba(245,183,75,.05); }
 .cell-play { color: #9eafc2; font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
 .card-cell { min-width: 0; }
 .cards { color: #687b92; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -299,6 +302,7 @@ select { cursor: pointer; }
 }
 .state-tag.selected { color: var(--cyan-2); border-color: rgba(51,185,255,.34); }
 .state-tag.queued { color: var(--amber); border-color: rgba(245,183,75,.34); background: rgba(245,183,75,.035); }
+.state-tag.priority { color: var(--amber); border-color: rgba(245,183,75,.46); background: rgba(245,183,75,.05); }
 .state-tag.idling { color: var(--green); border-color: rgba(99,230,167,.35); background: rgba(99,230,167,.04); }
 .empty { display: grid; place-items: center; gap: 4px; padding: 54px 20px; color: var(--muted); text-align: center; }
 .empty strong { color: #afbed0; }

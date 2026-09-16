@@ -83,6 +83,7 @@ let state: RuntimeState = {
 
 let steamLogonID = 0;
 let manualAppIds = new Set<number>(DEFAULT_APPIDS);
+let priorityAppIds = new Set<number>();
 
 function generateLogonID(): number {
   let id = crypto.randomBytes(4).readUInt32LE(0) >>> 0;
@@ -94,6 +95,10 @@ function loadSettings() {
   try {
     const x = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) as SettingsFile;
     state.selected = Array.isArray(x.selected) ? x.selected.map(Number).filter(Number.isFinite) : [];
+    const savedPriority = Array.isArray(x.priorityAppIds)
+      ? x.priorityAppIds.map(Number).filter(id => Number.isInteger(id) && id > 0).slice(0, IDLE_MAX_CONCURRENT)
+      : [];
+    priorityAppIds = new Set(savedPriority);
     if (Array.isArray(x.manualAppIds)) {
       for (const id of x.manualAppIds.map(Number)) {
         if (Number.isInteger(id) && id > 0) manualAppIds.add(id);
@@ -107,12 +112,14 @@ function loadSettings() {
     steamLogonID = generateLogonID();
   }
   if (!state.selected.length && DEFAULT_APPIDS.length) state.selected = DEFAULT_APPIDS.slice();
+  state.selected = [...new Set([...priorityAppIds, ...state.selected])];
   saveSettings();
 }
 function saveSettings() {
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify({
     selected: state.selected,
     manualAppIds: [...manualAppIds].sort((a, b) => a - b),
+    priorityAppIds: [...priorityAppIds].sort((a, b) => a - b),
     logonID: steamLogonID
   }, null, 2));
 }
@@ -144,14 +151,29 @@ function cancelIdleRotation() {
   idleRotationTimer = null;
   state.idleRotationAt = null;
 }
-function splitIdleBatches(appids: number[]): number[][] {
+function planIdleBatches(appids: number[]) {
+  const desired = [...new Set(appids.map(Number).filter(id => Number.isInteger(id) && id > 0))];
+  const desiredSet = new Set(desired);
+  const priority = [...priorityAppIds].filter(appid => desiredSet.has(appid)).slice(0, IDLE_MAX_CONCURRENT);
+  const pinned = new Set(priority);
+  const rotating = desired.filter(appid => !pinned.has(appid));
+  const rotatingSlots = Math.max(0, IDLE_MAX_CONCURRENT - priority.length);
   const batches: number[][] = [];
-  for (let i = 0; i < appids.length; i += IDLE_MAX_CONCURRENT) batches.push(appids.slice(i, i + IDLE_MAX_CONCURRENT));
-  return batches;
+
+  if (!rotating.length || rotatingSlots === 0) {
+    batches.push(priority.slice());
+  } else {
+    for (let i = 0; i < rotating.length; i += rotatingSlots) {
+      batches.push([...priority, ...rotating.slice(i, i + rotatingSlots)]);
+    }
+  }
+
+  return { desired, priority, rotating, rotatingSlots, batches };
 }
 function scheduleIdleRotation(client: any) {
   cancelIdleRotation();
-  if (!state.idleWanted || state.idleSuspended || state.shuttingDown || state.desiredIdling.length <= IDLE_MAX_CONCURRENT) return;
+  const plan = planIdleBatches(state.desiredIdling);
+  if (!state.idleWanted || state.idleSuspended || state.shuttingDown || plan.batches.length <= 1) return;
   state.idleRotationAt = Date.now() + IDLE_ROTATE_MS;
   idleRotationTimer = setTimeout(() => {
     idleRotationTimer = null;
@@ -159,8 +181,8 @@ function scheduleIdleRotation(client: any) {
     if (steam !== client || !state.connected || !state.idleWanted || state.idleSuspended || state.shuttingDown) return;
     if (state.externalPlaying || client.playingState?.blocked) return;
     try {
-      const batches = splitIdleBatches(state.desiredIdling);
-      const next = batches.length ? (state.idleBatchIndex + 1) % batches.length : 0;
+      const currentPlan = planIdleBatches(state.desiredIdling);
+      const next = currentPlan.batches.length ? (state.idleBatchIndex + 1) % currentPlan.batches.length : 0;
       applyIdleBatch(client, next, 'rotation');
     } catch (err) {
       state.message = `Idle rotation failed: ${err.message}`;
@@ -173,19 +195,24 @@ function applyIdleBatch(client: any, batchIndex = 0, reason = 'start') {
   const owned = new Set(library.map(x => x.appid));
   const desired = state.desiredIdling.filter(appid => !owned.size || owned.has(appid));
   if (!desired.length) throw new Error('Selected games are no longer available');
-  state.desiredIdling = desired;
-  const batches = splitIdleBatches(desired);
-  const index = ((Number(batchIndex) || 0) % batches.length + batches.length) % batches.length;
-  const batch = batches[index];
+  state.desiredIdling = [...new Set(desired)];
+  const plan = planIdleBatches(state.desiredIdling);
+  if (plan.priority.length >= IDLE_MAX_CONCURRENT && plan.rotating.length) {
+    throw new Error(`${IDLE_MAX_CONCURRENT} priority games occupy every Steam slot. Unpin at least one priority game to rotate the rest.`);
+  }
+  const index = ((Number(batchIndex) || 0) % plan.batches.length + plan.batches.length) % plan.batches.length;
+  const batch = plan.batches[index];
+  if (!batch.length) throw new Error('No games available for the active idle batch');
   client.gamesPlayed(batch, false);
   state.idling = batch.slice();
   state.idleBatchIndex = index;
-  state.idleBatchCount = batches.length;
-  const queued = desired.length - batch.length;
-  state.message = batches.length > 1
-    ? `Idling ${batch.length}/${desired.length} · batch ${index + 1}/${batches.length} · ${queued} queued · rotates every ${IDLE_ROTATE_MINUTES}m`
-    : `Idling ${batch.length} game${batch.length === 1 ? '' : 's'}`;
-  runtimeLog('INFO', `Idle batch ${index + 1}/${batches.length} applied after ${reason}: ${batch.length}/${desired.length} games`);
+  state.idleBatchCount = plan.batches.length;
+  const queued = state.desiredIdling.length - batch.length;
+  const priorityText = plan.priority.length ? ` · ${plan.priority.length} priority pinned` : '';
+  state.message = plan.batches.length > 1
+    ? `Idling ${batch.length}/${state.desiredIdling.length}${priorityText} · batch ${index + 1}/${plan.batches.length} · ${queued} queued · rotates every ${IDLE_ROTATE_MINUTES}m`
+    : `Idling ${batch.length} game${batch.length === 1 ? '' : 's'}${priorityText}`;
+  runtimeLog('INFO', `Idle batch ${index + 1}/${plan.batches.length} applied after ${reason}: ${batch.length}/${state.desiredIdling.length} games, priority=${plan.priority.length}`);
   scheduleIdleRotation(client);
 }
 
@@ -293,6 +320,8 @@ function sanitizeState() {
   return {
     ...state,
     runtimeMode: CLOUD_MODE ? 'cloud' : 'local',
+    priorityAppIds: [...priorityAppIds].sort((a, b) => a - b),
+    priorityCount: priorityAppIds.size,
     queuedIdling: state.idleWanted ? state.desiredIdling.filter(appid => !active.has(appid)) : [],
     idleMaxConcurrent: IDLE_MAX_CONCURRENT,
     idleRotateMinutes: IDLE_ROTATE_MINUTES,
@@ -1215,8 +1244,13 @@ function startIdle(appids: unknown[]) {
   }
 
   const owned = new Set(library.map(x => x.appid));
-  const clean = [...new Set(appids.map(Number).filter(x => Number.isInteger(x) && x > 0 && owned.has(x)))];
+  const requested = appids.map(Number).filter(x => Number.isInteger(x) && x > 0 && owned.has(x));
+  const priorityOwned = [...priorityAppIds].filter(appid => owned.has(appid));
+  const clean = [...new Set([...priorityOwned, ...requested])];
   if (!clean.length) throw new Error('Select at least one owned game');
+  if (priorityOwned.length >= IDLE_MAX_CONCURRENT && clean.length > IDLE_MAX_CONCURRENT) {
+    throw new Error(`${IDLE_MAX_CONCURRENT} priority games occupy every Steam slot. Unpin at least one priority game before starting a larger idle set.`);
+  }
 
   cancelIdleRestore();
   cancelIdleRotation();
@@ -1228,7 +1262,7 @@ function startIdle(appids: unknown[]) {
   state.externalPlaying = false;
   state.externalPlayingApp = 0;
   state.idleBatchIndex = 0;
-  state.idleBatchCount = Math.ceil(clean.length / IDLE_MAX_CONCURRENT);
+  state.idleBatchCount = planIdleBatches(clean).batches.length;
   try {
     applyIdleBatch(steam, 0, 'start');
   } catch (err) {
@@ -1430,11 +1464,37 @@ const server = http.createServer(async (req, res) => {
       const changed = await refreshPlaytimeSnapshot();
       return json(res, 200, { ok: true, changed, revision: state.playtimeRevision, syncedAt: state.playtimeSyncAt });
     }
+    if (req.method === 'POST' && req.url === '/api/priority') {
+      const body = await readJson(req);
+      const owned = new Set(library.map(x => x.appid));
+      const clean = [...new Set<number>((body.appids || []).map(Number).filter((x: number) => Number.isInteger(x) && x > 0 && (!owned.size || owned.has(x))))];
+      if (clean.length > IDLE_MAX_CONCURRENT) {
+        return json(res, 400, { error: `Priority is limited to ${IDLE_MAX_CONCURRENT} games because priority games stay active in every batch.` });
+      }
+      const desiredAfter = [...new Set([...clean, ...state.desiredIdling])];
+      if (state.idleWanted && clean.length >= IDLE_MAX_CONCURRENT && desiredAfter.length > IDLE_MAX_CONCURRENT) {
+        return json(res, 409, { error: `${IDLE_MAX_CONCURRENT} priority games would consume every active slot. Unpin at least one game before keeping other games in rotation.` });
+      }
+      priorityAppIds = new Set(clean);
+      state.selected = [...new Set([...clean, ...state.selected])];
+      if (state.idleWanted) {
+        state.desiredIdling = desiredAfter;
+        applyIdleBatch(steam, state.idleBatchIndex, 'priority update');
+      }
+      saveSettings();
+      return json(res, 200, {
+        ok: true,
+        priorityAppIds: [...priorityAppIds].sort((a, b) => a - b),
+        selected: state.selected,
+        idling: state.idling
+      });
+    }
     if (req.method === 'POST' && req.url === '/api/selection') {
       const body = await readJson(req);
-      state.selected = [...new Set<number>((body.appids || []).map(Number).filter((x: number) => Number.isFinite(x)))];
+      const requested = (body.appids || []).map(Number).filter((x: number) => Number.isFinite(x));
+      state.selected = [...new Set<number>([...priorityAppIds, ...requested])];
       saveSettings();
-      return json(res, 200, { ok: true });
+      return json(res, 200, { ok: true, selected: state.selected });
     }
     if (req.method === 'POST' && req.url === '/api/library/manual') {
       const body = await readJson(req);

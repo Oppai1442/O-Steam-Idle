@@ -10,7 +10,8 @@ const els = {
   search: $('#search'), filter: $('#filter'), sort: $('#sort'), refreshBtn: $('#refreshBtn'), refreshCardsBtn: $('#refreshCardsBtn'),
   libraryCount: $('#libraryCount'), visibleCount: $('#visibleCount'), selectedCount: $('#selectedCount'), idlingCount: $('#idlingCount'),
   cardGamesCount: $('#cardGamesCount'), cardDropsCount: $('#cardDropsCount'), selectVisibleBtn: $('#selectVisibleBtn'),
-  selectDropsBtn: $('#selectDropsBtn'), clearBtn: $('#clearBtn'), manualBtn: $('#manualBtn'), copyBtn: $('#copyBtn'),
+  selectDropsBtn: $('#selectDropsBtn'), prioritySelectedBtn: $('#prioritySelectedBtn'), clearPriorityBtn: $('#clearPriorityBtn'),
+  clearBtn: $('#clearBtn'), manualBtn: $('#manualBtn'), copyBtn: $('#copyBtn'),
   stopBtn: $('#stopBtn'), startBtn: $('#startBtn'), exitBtn: $('#exitBtn'), notice: $('#notice'), games: $('#games'), emptyState: $('#emptyState')
 };
 
@@ -53,6 +54,7 @@ function visibleApps() {
     const matches = !q || g.name.toLowerCase().includes(q) || String(g.appid).includes(q);
     if (!matches) return false;
     if (filter === 'selected') return selected.has(g.appid);
+    if (filter === 'priority') return (status.priorityAppIds || []).includes(g.appid);
     if (filter === 'played') return g.playtime > 0 || g.lastPlayed > 0;
     if (filter === 'never') return g.playtime <= 0 && !g.lastPlayed;
     if (filter === 'manual') return g.discoveredViaManual === true;
@@ -84,6 +86,7 @@ function sourceTags(g: ClientGame): string[] {
 function renderGames() {
   const apps = visibleApps();
   const idling = new Set(status.idling || []);
+  const priorities = new Set(status.priorityAppIds || []);
   els.visibleCount.textContent = apps.length;
   els.libraryCount.textContent = library.length;
   els.selectedCount.textContent = selected.size;
@@ -97,8 +100,9 @@ function renderGames() {
     const label = document.createElement('label');
     const isSelected = selected.has(g.appid);
     const isIdling = idling.has(g.appid);
+    const isPriority = priorities.has(g.appid);
     const isQueued = !!status.idleWanted && isSelected && !isIdling;
-    label.className = `game${isSelected ? ' active' : ''}${isIdling ? ' idling' : ''}${isQueued ? ' queued' : ''}`;
+    label.className = `game${isSelected ? ' active' : ''}${isIdling ? ' idling' : ''}${isQueued ? ' queued' : ''}${isPriority ? ' priority' : ''}`;
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
@@ -140,6 +144,24 @@ function renderGames() {
       chip.textContent = tag;
       meta.append(chip);
     }
+    const priorityToggle = document.createElement('span');
+    priorityToggle.className = `priority-toggle${isPriority ? ' on' : ''}`;
+    priorityToggle.setAttribute('role', 'button');
+    priorityToggle.setAttribute('tabindex', '0');
+    priorityToggle.setAttribute('aria-label', `${isPriority ? 'Remove' : 'Set'} priority for ${g.name}`);
+    priorityToggle.title = isPriority ? 'Priority: stays active in every idle batch' : 'Pin as priority';
+    priorityToggle.textContent = isPriority ? '★ PRIORITY' : '☆ PRIORITY';
+    const doTogglePriority = async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      await togglePriority(g.appid);
+    };
+    priorityToggle.addEventListener('click', doTogglePriority);
+    priorityToggle.addEventListener('keydown', async ev => {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      await doTogglePriority(ev);
+    });
+    meta.append(priorityToggle);
     if (g.lastPlayed) {
       const last = document.createElement('span');
       last.textContent = `last ${fmtDate(g.lastPlayed)}`;
@@ -165,8 +187,9 @@ function renderGames() {
     cardCell.append(cards);
 
     const stateTag = document.createElement('div');
-    stateTag.className = `state-tag${isIdling ? ' idling' : isQueued ? ' queued' : isSelected ? ' selected' : ''}`;
-    stateTag.textContent = isIdling ? 'ACTIVE' : isQueued ? 'QUEUED' : isSelected ? 'ARMED' : 'STANDBY';
+    const pinnedLive = isPriority && isIdling;
+    stateTag.className = `state-tag${pinnedLive ? ' priority' : isIdling ? ' idling' : isQueued ? ' queued' : isPriority ? ' priority' : isSelected ? ' selected' : ''}`;
+    stateTag.textContent = pinnedLive ? 'PINNED' : isIdling ? 'ACTIVE' : isQueued ? 'QUEUED' : isPriority ? 'PRIORITY' : isSelected ? 'ARMED' : 'STANDBY';
 
     label.append(cb, icon, info, play, cardCell, stateTag);
     frag.append(label);
@@ -187,6 +210,26 @@ function setNotice(text) {
   else els.notice.textContent = text;
 }
 function showError(err) { setNotice(err.message || String(err)); }
+
+async function setPriority(appids: number[]) {
+  const out = await api('/api/priority', { method:'POST', body: JSON.stringify({ appids }) });
+  status.priorityAppIds = Array.isArray(out.priorityAppIds) ? out.priorityAppIds : [];
+  status.priorityCount = status.priorityAppIds.length;
+  if (Array.isArray(out.selected)) selected = new Set(out.selected);
+  if (Array.isArray(out.idling)) status.idling = out.idling;
+  renderGames();
+  return out;
+}
+
+async function togglePriority(appid: number) {
+  const next = new Set<number>(status.priorityAppIds || []);
+  if (next.has(appid)) next.delete(appid);
+  else { next.add(appid); selected.add(appid); }
+  try {
+    await setPriority([...next]);
+    setNotice(`${next.has(appid) ? 'Priority pinned' : 'Priority removed'} · App ${appid}`);
+  } catch (e) { showError(e); }
+}
 
 async function loadLibrary() {
   const data = await api('/api/library');
@@ -224,7 +267,8 @@ function renderStatus() {
   const activeCount = (status.idling || []).length;
   const desiredCount = (status.desiredIdling || []).length || activeCount;
   const batchText = Number(status.idleBatchCount || 0) > 1 ? ` · B${Number(status.idleBatchIndex || 0) + 1}/${status.idleBatchCount}` : '';
-  els.sessionText.textContent = activeCount ? `${activeCount}/${desiredCount} ACTIVE${batchText}` : status.idleWanted ? 'PENDING' : yielding ? 'YIELD' : 'IDLE';
+  const priorityText = Number(status.priorityCount || 0) ? ` · P${status.priorityCount}` : '';
+  els.sessionText.textContent = activeCount ? `${activeCount}/${desiredCount} ACTIVE${priorityText}${batchText}` : status.idleWanted ? `PENDING${priorityText}` : yielding ? 'YIELD' : `IDLE${priorityText}`;
   els.reconnectCount.textContent = status.reconnectCount || 0;
   setNotice(status.libraryError || status.cardScanError || status.message || 'Ready');
 
@@ -308,8 +352,16 @@ els.exitBtn.addEventListener('click', async () => {
   setNotice('Server stopped. You can close this tab.');
 });
 els.selectVisibleBtn.addEventListener('click', () => { visibleApps().forEach(g => selected.add(g.appid)); persistSelection(); renderGames(); });
-els.selectDropsBtn.addEventListener('click', () => { selected.clear(); library.filter(g => Number(g.cardDrops || 0) > 0).forEach(g => selected.add(g.appid)); persistSelection(); renderGames(); });
-els.clearBtn.addEventListener('click', () => { selected.clear(); persistSelection(); renderGames(); });
+els.selectDropsBtn.addEventListener('click', () => { selected.clear(); library.filter(g => Number(g.cardDrops || 0) > 0).forEach(g => selected.add(g.appid)); (status.priorityAppIds || []).forEach(id => selected.add(id)); persistSelection(); renderGames(); });
+els.prioritySelectedBtn.addEventListener('click', async () => {
+  const next = new Set<number>(status.priorityAppIds || []);
+  selected.forEach(id => next.add(id));
+  try { await setPriority([...next]); setNotice(`Priority pinned: ${next.size}/${status.idleMaxConcurrent || 32}`); } catch (e) { showError(e); }
+});
+els.clearPriorityBtn.addEventListener('click', async () => {
+  try { await setPriority([]); setNotice('Priority cleared. Games remain selected and will rotate normally.'); } catch (e) { showError(e); }
+});
+els.clearBtn.addEventListener('click', () => { selected = new Set(status.priorityAppIds || []); persistSelection(); renderGames(); });
 els.manualBtn.addEventListener('click', async () => {
   const raw = prompt('Add Steam AppID(s). Separate multiple IDs with commas or spaces.\nExample: 346110 2399830');
   if (!raw) return;

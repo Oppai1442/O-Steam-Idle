@@ -25,6 +25,8 @@ export interface ClientStatus {
   idling?: number[];
   desiredIdling?: number[];
   queuedIdling?: number[];
+  priorityAppIds?: number[];
+  priorityCount?: number;
   idleBatchIndex?: number;
   idleBatchCount?: number;
   idleRotationAt?: number | null;

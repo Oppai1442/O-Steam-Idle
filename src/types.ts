@@ -63,5 +63,6 @@ export interface RuntimeState {
 export interface SettingsFile {
   selected?: unknown[];
   manualAppIds?: unknown[];
+  priorityAppIds?: unknown[];
   logonID?: unknown;
 }
