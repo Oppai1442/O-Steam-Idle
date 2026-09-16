@@ -1,0 +1,47 @@
+name: Apply priority idle
+
+on:
+  push:
+    branches: [feature/priority-idle]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply priority patch
+        run: python3 scripts/apply-priority-idle.py
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck and build
+        run: |
+          npm run typecheck
+          npm run build
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          O_IDLE_DISABLE_BROWSER=1 node dist/src/server.js > /tmp/o-steam-idle.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3210/health | grep -q '^ok$'; then break; fi
+            sleep 0.25
+          done
+          curl --fail --silent http://127.0.0.1:3210/health | grep -q '^ok$'
+      - name: Commit generated priority feature
+        shell: bash
+        run: |
+          rm -f .github/workflows/apply-priority-idle.yml scripts/apply-priority-idle.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add persistent priority idle slots"
+          git push origin HEAD:feature/priority-idle
