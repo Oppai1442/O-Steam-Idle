@@ -20,6 +20,7 @@ let selected = new Set<number>();
 let initializedSelection = false;
 let lastLibraryCount = -1;
 let lastCardScanReady = false;
+let lastPlaytimeRevision = -1;
 let shuttingDown = false;
 
 async function api(url: string, options: RequestInit = {}): Promise<any> {
@@ -52,8 +53,8 @@ function visibleApps() {
     const matches = !q || g.name.toLowerCase().includes(q) || String(g.appid).includes(q);
     if (!matches) return false;
     if (filter === 'selected') return selected.has(g.appid);
-    if (filter === 'played') return g.playtime > 0;
-    if (filter === 'never') return g.playtime <= 0;
+    if (filter === 'played') return g.playtime > 0 || g.lastPlayed > 0;
+    if (filter === 'never') return g.playtime <= 0 && !g.lastPlayed;
     if (filter === 'manual') return g.discoveredViaManual === true;
     if (filter === 'cards') return g.hasCards === true;
     if (filter === 'drops') return Number(g.cardDrops || 0) > 0;
@@ -96,7 +97,8 @@ function renderGames() {
     const label = document.createElement('label');
     const isSelected = selected.has(g.appid);
     const isIdling = idling.has(g.appid);
-    label.className = `game${isSelected ? ' active' : ''}${isIdling ? ' idling' : ''}`;
+    const isQueued = !!status.idleWanted && isSelected && !isIdling;
+    label.className = `game${isSelected ? ' active' : ''}${isIdling ? ' idling' : ''}${isQueued ? ' queued' : ''}`;
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
@@ -163,8 +165,8 @@ function renderGames() {
     cardCell.append(cards);
 
     const stateTag = document.createElement('div');
-    stateTag.className = `state-tag${isIdling ? ' idling' : isSelected ? ' selected' : ''}`;
-    stateTag.textContent = isIdling ? 'LIVE' : isSelected ? 'ARMED' : 'STANDBY';
+    stateTag.className = `state-tag${isIdling ? ' idling' : isQueued ? ' queued' : isSelected ? ' selected' : ''}`;
+    stateTag.textContent = isIdling ? 'ACTIVE' : isQueued ? 'QUEUED' : isSelected ? 'ARMED' : 'STANDBY';
 
     label.append(cb, icon, info, play, cardCell, stateTag);
     frag.append(label);
@@ -219,7 +221,10 @@ function renderStatus() {
     ? (status.accountName ? status.accountName : 'Steam session online')
     : connecting || reconnecting ? 'Linking Steam session…' : 'No active session';
   els.stateText.textContent = connected ? 'ONLINE' : reconnecting ? 'RECOVER' : connecting ? 'LINKING' : 'READY';
-  els.sessionText.textContent = (status.idling || []).length ? `${status.idling.length} ACTIVE` : status.idleWanted ? 'PENDING' : yielding ? 'YIELD' : 'IDLE';
+  const activeCount = (status.idling || []).length;
+  const desiredCount = (status.desiredIdling || []).length || activeCount;
+  const batchText = Number(status.idleBatchCount || 0) > 1 ? ` · B${Number(status.idleBatchIndex || 0) + 1}/${status.idleBatchCount}` : '';
+  els.sessionText.textContent = activeCount ? `${activeCount}/${desiredCount} ACTIVE${batchText}` : status.idleWanted ? 'PENDING' : yielding ? 'YIELD' : 'IDLE';
   els.reconnectCount.textContent = status.reconnectCount || 0;
   setNotice(status.libraryError || status.cardScanError || status.message || 'Ready');
 
@@ -254,11 +259,14 @@ async function poll() {
     status = await api('/api/status');
     renderStatus();
     const cardsJustFinished = !!status.cardScanReady && !lastCardScanReady;
-    if (status.libraryReady && (status.libraryCount !== lastLibraryCount || cardsJustFinished)) {
+    const playtimeRevision = Number(status.playtimeRevision || 0);
+    const playtimeChanged = playtimeRevision !== lastPlaytimeRevision;
+    if (status.libraryReady && (status.libraryCount !== lastLibraryCount || cardsJustFinished || playtimeChanged)) {
       lastLibraryCount = status.libraryCount;
       await loadLibrary();
     }
     lastCardScanReady = !!status.cardScanReady;
+    lastPlaytimeRevision = playtimeRevision;
   } catch (err) { showError(err); }
 }
 

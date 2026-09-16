@@ -30,6 +30,12 @@ const CRED_FILE = path.join(DATA, 'credentials.dat');
 const SETTINGS_FILE = path.join(DATA, 'settings.json');
 const EXTERNAL_RECHECK_MS = 30000;
 const IDLE_RESTORE_DELAY_MS = 2500;
+const STEAM_MAX_CONCURRENT_APPS = 32;
+const IDLE_MAX_CONCURRENT = Math.min(STEAM_MAX_CONCURRENT_APPS, Math.max(1, Number(process.env.O_IDLE_MAX_CONCURRENT || STEAM_MAX_CONCURRENT_APPS) || STEAM_MAX_CONCURRENT_APPS));
+const IDLE_ROTATE_MINUTES = Math.max(1, Number(process.env.O_IDLE_ROTATE_MINUTES || 30) || 30);
+const IDLE_ROTATE_MS = IDLE_ROTATE_MINUTES * 60 * 1000;
+const PLAYTIME_SYNC_MINUTES = Math.max(1, Number(process.env.O_IDLE_PLAYTIME_SYNC_MINUTES || 5) || 5);
+const PLAYTIME_SYNC_MS = PLAYTIME_SYNC_MINUTES * 60 * 1000;
 const LOG_FILE = path.join(DATA, 'runtime.log');
 fs.mkdirSync(DATA, { recursive: true });
 
@@ -64,6 +70,13 @@ let state: RuntimeState = {
   lastConnectedAt: null,
   idleWanted: false,
   desiredIdling: [],
+  idleBatchIndex: 0,
+  idleBatchCount: 0,
+  idleRotationAt: null,
+  playtimeSyncing: false,
+  playtimeSyncAt: null,
+  playtimeRevision: 0,
+  playtimeSyncError: null,
   shuttingDown: false,
   runtimeMode: CLOUD_MODE ? 'cloud' : 'local'
 };
@@ -121,13 +134,64 @@ function runtimeLog(level: 'INFO' | 'WARN' | 'ERROR', message: string) {
 }
 
 let idleRestoreTimer = null;
+let idleRotationTimer = null;
 function cancelIdleRestore() {
   if (idleRestoreTimer) clearTimeout(idleRestoreTimer);
   idleRestoreTimer = null;
 }
+function cancelIdleRotation() {
+  if (idleRotationTimer) clearTimeout(idleRotationTimer);
+  idleRotationTimer = null;
+  state.idleRotationAt = null;
+}
+function splitIdleBatches(appids: number[]): number[][] {
+  const batches: number[][] = [];
+  for (let i = 0; i < appids.length; i += IDLE_MAX_CONCURRENT) batches.push(appids.slice(i, i + IDLE_MAX_CONCURRENT));
+  return batches;
+}
+function scheduleIdleRotation(client: any) {
+  cancelIdleRotation();
+  if (!state.idleWanted || state.idleSuspended || state.shuttingDown || state.desiredIdling.length <= IDLE_MAX_CONCURRENT) return;
+  state.idleRotationAt = Date.now() + IDLE_ROTATE_MS;
+  idleRotationTimer = setTimeout(() => {
+    idleRotationTimer = null;
+    state.idleRotationAt = null;
+    if (steam !== client || !state.connected || !state.idleWanted || state.idleSuspended || state.shuttingDown) return;
+    if (state.externalPlaying || client.playingState?.blocked) return;
+    try {
+      const batches = splitIdleBatches(state.desiredIdling);
+      const next = batches.length ? (state.idleBatchIndex + 1) % batches.length : 0;
+      applyIdleBatch(client, next, 'rotation');
+    } catch (err) {
+      state.message = `Idle rotation failed: ${err.message}`;
+      runtimeLog('ERROR', `Idle rotation failed: ${err.message}`);
+    }
+  }, IDLE_ROTATE_MS);
+  idleRotationTimer.unref?.();
+}
+function applyIdleBatch(client: any, batchIndex = 0, reason = 'start') {
+  const owned = new Set(library.map(x => x.appid));
+  const desired = state.desiredIdling.filter(appid => !owned.size || owned.has(appid));
+  if (!desired.length) throw new Error('Selected games are no longer available');
+  state.desiredIdling = desired;
+  const batches = splitIdleBatches(desired);
+  const index = ((Number(batchIndex) || 0) % batches.length + batches.length) % batches.length;
+  const batch = batches[index];
+  client.gamesPlayed(batch, false);
+  state.idling = batch.slice();
+  state.idleBatchIndex = index;
+  state.idleBatchCount = batches.length;
+  const queued = desired.length - batch.length;
+  state.message = batches.length > 1
+    ? `Idling ${batch.length}/${desired.length} · batch ${index + 1}/${batches.length} · ${queued} queued · rotates every ${IDLE_ROTATE_MINUTES}m`
+    : `Idling ${batch.length} game${batch.length === 1 ? '' : 's'}`;
+  runtimeLog('INFO', `Idle batch ${index + 1}/${batches.length} applied after ${reason}: ${batch.length}/${desired.length} games`);
+  scheduleIdleRotation(client);
+}
 
 function scheduleIdleRestore(client, reason = 'reconnect') {
   cancelIdleRestore();
+  cancelIdleRotation();
   if (!state.idleWanted || !state.desiredIdling.length || state.idleSuspended) return;
 
   idleRestoreTimer = setTimeout(() => {
@@ -154,10 +218,8 @@ function scheduleIdleRestore(client, reason = 'reconnect') {
     }
 
     try {
-      client.gamesPlayed(clean, false);
-      state.idling = clean.slice();
-      state.message = `Reconnected · resumed ${clean.length} idling game${clean.length === 1 ? '' : 's'}`;
-      runtimeLog('INFO', `Idle resumed after ${reason}: ${clean.length} games`);
+      state.desiredIdling = clean.slice();
+      applyIdleBatch(client, state.idleBatchIndex, `reconnect/${reason}`);
     } catch (err) {
       state.idling = [];
       state.message = `Connected, but idle resume failed: ${err.message}`;
@@ -227,9 +289,14 @@ function hasSavedLogin() {
 }
 
 function sanitizeState() {
+  const active = new Set(state.idling);
   return {
     ...state,
     runtimeMode: CLOUD_MODE ? 'cloud' : 'local',
+    queuedIdling: state.idleWanted ? state.desiredIdling.filter(appid => !active.has(appid)) : [],
+    idleMaxConcurrent: IDLE_MAX_CONCURRENT,
+    idleRotateMinutes: IDLE_ROTATE_MINUTES,
+    playtimeSyncMinutes: PLAYTIME_SYNC_MINUTES,
     libraryCount: library.length,
     hasSavedLogin: hasSavedLogin(),
     cloudTokenConfigured: !!ENV_REFRESH_TOKEN,
@@ -295,6 +362,7 @@ function attachSteamEvents(client: any) {
 
     if (blocked) {
       cancelIdleRestore();
+      cancelIdleRotation();
 
       if (state.idling.length) {
         try { client.gamesPlayed([]); } catch (_) {}
@@ -320,6 +388,7 @@ function attachSteamEvents(client: any) {
     state.connected = false;
     state.connecting = false;
     state.idling = [];
+    cancelIdleRotation();
 
     if (state.shuttingDown) return;
 
@@ -343,6 +412,7 @@ function attachSteamEvents(client: any) {
     state.connecting = false;
     state.reconnecting = false;
     state.idling = [];
+    cancelIdleRotation();
 
     if (err?.eresult === 6 || err?.message === 'LoggedInElsewhere') {
       cancelIdleRestore();
@@ -972,9 +1042,59 @@ async function refreshLibrary() {
   state.cardScanError = null;
   state.cardGames = 0;
   state.cardDropsRemaining = 0;
+  state.playtimeSyncAt = Date.now();
+  state.playtimeRevision += 1;
+  state.playtimeSyncError = null;
   state.message = `Library loaded: ${library.length} apps · owned/profile/manual = ${ownedApps.length}/${profileApps.length}/${manualApps.length}`;
   runtimeLog('INFO', `Library loaded: ${library.length} apps; sources owned=${ownedApps.length}, profile=${profileApps.length}, dynamicStoreDiag=${dynamicStoreApps.length}, localPlayed=${localSteamApps.length}, manual=${manualApps.length}; store-only ignored=${dynamicOnly}, local-added=${localOnly}`);
   return library;
+}
+
+async function refreshPlaytimeSnapshot() {
+  if (!state.connected || !steam) throw new Error('Not connected to Steam');
+  if (state.playtimeSyncing) return 0;
+  state.playtimeSyncing = true;
+  state.playtimeSyncError = null;
+  try {
+    const [ownedResult, profileResult] = await Promise.allSettled([getUserOwnedApps(), getProfilePlayedApps()]);
+    const updates = new Map<number, { playtime: number; lastPlayed: number }>();
+    const absorb = (apps: any[], ownedShape: boolean) => {
+      for (const app of apps || []) {
+        const appid = Number(app.appid);
+        if (!Number.isInteger(appid) || appid <= 0) continue;
+        const playtime = Number(ownedShape ? (app.playtime_forever || app.playtime || 0) : (app.playtime || 0));
+        const lastPlayed = Number(ownedShape ? (app.rtime_last_played || app.lastPlayed || 0) : (app.lastPlayed || 0));
+        const prev = updates.get(appid) || { playtime: 0, lastPlayed: 0 };
+        updates.set(appid, { playtime: Math.max(prev.playtime, playtime), lastPlayed: Math.max(prev.lastPlayed, lastPlayed) });
+      }
+    };
+    if (ownedResult.status === 'fulfilled') absorb(ownedResult.value, true);
+    if (profileResult.status === 'fulfilled') absorb(profileResult.value, false);
+    if (!updates.size) {
+      const ownedErr = ownedResult.status === 'rejected' ? ownedResult.reason?.message || String(ownedResult.reason) : 'no owned data';
+      const profileErr = profileResult.status === 'rejected' ? profileResult.reason?.message || String(profileResult.reason) : 'no profile data';
+      throw new Error(`No playtime source available (owned: ${ownedErr}; profile: ${profileErr})`);
+    }
+    let changed = 0;
+    library = library.map(app => {
+      const update = updates.get(app.appid);
+      if (!update) return app;
+      const playtime = Math.max(Number(app.playtime || 0), update.playtime);
+      const lastPlayed = Math.max(Number(app.lastPlayed || 0), update.lastPlayed);
+      if (playtime !== Number(app.playtime || 0) || lastPlayed !== Number(app.lastPlayed || 0)) changed += 1;
+      return { ...app, playtime, lastPlayed };
+    });
+    state.playtimeSyncAt = Date.now();
+    state.playtimeRevision += 1;
+    runtimeLog('INFO', `Playtime snapshot synced: ${updates.size} source apps, ${changed} library rows changed`);
+    return changed;
+  } catch (err) {
+    state.playtimeSyncError = err.message || String(err);
+    runtimeLog('WARN', `Playtime sync failed: ${state.playtimeSyncError}`);
+    throw err;
+  } finally {
+    state.playtimeSyncing = false;
+  }
 }
 
 function waitForWebSession(timeoutMs = 15000): Promise<string[]> {
@@ -1099,22 +1219,32 @@ function startIdle(appids: unknown[]) {
   if (!clean.length) throw new Error('Select at least one owned game');
 
   cancelIdleRestore();
+  cancelIdleRotation();
 
-  steam.gamesPlayed(clean, false);
-  state.idling = clean.slice();
   state.desiredIdling = clean.slice();
   state.idleWanted = true;
   state.selected = clean.slice();
   state.idleSuspended = false;
   state.externalPlaying = false;
   state.externalPlayingApp = 0;
+  state.idleBatchIndex = 0;
+  state.idleBatchCount = Math.ceil(clean.length / IDLE_MAX_CONCURRENT);
+  try {
+    applyIdleBatch(steam, 0, 'start');
+  } catch (err) {
+    state.idling = [];
+    state.desiredIdling = [];
+    state.idleWanted = false;
+    state.idleBatchIndex = 0;
+    state.idleBatchCount = 0;
+    throw err;
+  }
   saveSettings();
-  state.message = `Idling ${clean.length} game${clean.length === 1 ? '' : 's'}`;
-  runtimeLog('INFO', `Idle started: ${clean.length} games`);
 }
 
 function stopIdle() {
   cancelIdleRestore();
+  cancelIdleRotation();
   if (steam && state.connected) {
     try { steam.gamesPlayed([]); } catch (_) {}
   }
@@ -1122,6 +1252,9 @@ function stopIdle() {
   state.desiredIdling = [];
   state.idleWanted = false;
   state.idleSuspended = false;
+  state.idleBatchIndex = 0;
+  state.idleBatchCount = 0;
+  state.idleRotationAt = null;
   state.message = 'Idle stopped';
   runtimeLog('INFO', 'Idle stopped');
 }
@@ -1175,8 +1308,11 @@ function gracefulShutdown(reason = 'shutdown') {
   state.shuttingDown = true;
   state.message = 'Shutting down...';
   cancelIdleRestore();
+  cancelIdleRotation();
   state.idleWanted = false;
   state.desiredIdling = [];
+  state.idleBatchIndex = 0;
+  state.idleBatchCount = 0;
 
   runtimeLog('INFO', `Graceful shutdown requested (${reason})`);
 
@@ -1290,6 +1426,10 @@ const server = http.createServer(async (req, res) => {
       await refreshCardData();
       return json(res, 200, { ok: true, cardGames: state.cardGames, drops: state.cardDropsRemaining });
     }
+    if (req.method === 'POST' && req.url === '/api/playtime/refresh') {
+      const changed = await refreshPlaytimeSnapshot();
+      return json(res, 200, { ok: true, changed, revision: state.playtimeRevision, syncedAt: state.playtimeSyncAt });
+    }
     if (req.method === 'POST' && req.url === '/api/selection') {
       const body = await readJson(req);
       state.selected = [...new Set<number>((body.appids || []).map(Number).filter((x: number) => Number.isFinite(x)))];
@@ -1359,6 +1499,12 @@ server.listen(PORT, HOST, () => {
     state.message = `Saved login could not be loaded: ${err.message}`;
   }
 });
+
+const playtimeSyncTimer = setInterval(() => {
+  if (!state.connected || !state.idleWanted || state.cardScanRunning || state.playtimeSyncing) return;
+  refreshPlaytimeSnapshot().catch(() => {});
+}, PLAYTIME_SYNC_MS);
+playtimeSyncTimer.unref?.();
 
 // Passive fatal-session recovery. Normal network/Steam CM outages are handled by
 // steam-user autoRelogin and never reach this timer. We reconnect only after a

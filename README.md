@@ -73,7 +73,7 @@ The card scanner uses the authenticated Steam Community badge pages. It marks:
 
 Diagnostics are written to `data/runtime.log` locally and rotate at roughly 2 MB. Refresh tokens and web cookies are not written to that log.
 
-## Cloudflare Container mode
+## Steam concurrency and playtime\n\nSteam presence has a finite simultaneous-app capacity. O-Steam-Idle keeps at most 32 games ACTIVE at a time and round-robins larger selections in 30-minute batches by default. Games waiting for their turn are shown as QUEUED instead of LIVE.\n\nSet O_IDLE_ROTATE_MINUTES to change the batch duration or O_IDLE_MAX_CONCURRENT to use a lower cap. The app never requests more than 32 concurrent AppIDs.\n\nPlaytime shown in the UI is a Steam snapshot, not a local stopwatch. While idling, O-Steam-Idle refreshes that snapshot every 5 minutes by default (O_IDLE_PLAYTIME_SYNC_MINUTES). Steam can still publish playtime asynchronously, so an ACTIVE batch may not show an immediate counter change.\n\n## Cloudflare Container mode
 
 The repository includes a `Dockerfile` plus a Worker/Container deployment under `cloudflare/`.
 

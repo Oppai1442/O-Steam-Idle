@@ -45,6 +45,7 @@
   var initializedSelection = false;
   var lastLibraryCount = -1;
   var lastCardScanReady = false;
+  var lastPlaytimeRevision = -1;
   var shuttingDown = false;
   async function api(url, options = {}) {
     const r = await fetch(url, {
@@ -71,8 +72,8 @@
       const matches = !q || g.name.toLowerCase().includes(q) || String(g.appid).includes(q);
       if (!matches) return false;
       if (filter === "selected") return selected.has(g.appid);
-      if (filter === "played") return g.playtime > 0;
-      if (filter === "never") return g.playtime <= 0;
+      if (filter === "played") return g.playtime > 0 || g.lastPlayed > 0;
+      if (filter === "never") return g.playtime <= 0 && !g.lastPlayed;
       if (filter === "manual") return g.discoveredViaManual === true;
       if (filter === "cards") return g.hasCards === true;
       if (filter === "drops") return Number(g.cardDrops || 0) > 0;
@@ -112,7 +113,8 @@
       const label = document.createElement("label");
       const isSelected = selected.has(g.appid);
       const isIdling = idling.has(g.appid);
-      label.className = `game${isSelected ? " active" : ""}${isIdling ? " idling" : ""}`;
+      const isQueued = !!status.idleWanted && isSelected && !isIdling;
+      label.className = `game${isSelected ? " active" : ""}${isIdling ? " idling" : ""}${isQueued ? " queued" : ""}`;
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = isSelected;
@@ -173,8 +175,8 @@
       }
       cardCell.append(cards);
       const stateTag = document.createElement("div");
-      stateTag.className = `state-tag${isIdling ? " idling" : isSelected ? " selected" : ""}`;
-      stateTag.textContent = isIdling ? "LIVE" : isSelected ? "ARMED" : "STANDBY";
+      stateTag.className = `state-tag${isIdling ? " idling" : isQueued ? " queued" : isSelected ? " selected" : ""}`;
+      stateTag.textContent = isIdling ? "ACTIVE" : isQueued ? "QUEUED" : isSelected ? "ARMED" : "STANDBY";
       label.append(cb, icon, info, play, cardCell, stateTag);
       frag.append(label);
     }
@@ -223,7 +225,10 @@
     els.runtimeMode.textContent = cloud ? "CLOUDFLARE" : "LOCAL";
     els.accountTitle.textContent = connected ? status.accountName ? status.accountName : "Steam session online" : connecting || reconnecting ? "Linking Steam session\u2026" : "No active session";
     els.stateText.textContent = connected ? "ONLINE" : reconnecting ? "RECOVER" : connecting ? "LINKING" : "READY";
-    els.sessionText.textContent = (status.idling || []).length ? `${status.idling.length} ACTIVE` : status.idleWanted ? "PENDING" : yielding ? "YIELD" : "IDLE";
+    const activeCount = (status.idling || []).length;
+    const desiredCount = (status.desiredIdling || []).length || activeCount;
+    const batchText = Number(status.idleBatchCount || 0) > 1 ? ` \xB7 B${Number(status.idleBatchIndex || 0) + 1}/${status.idleBatchCount}` : "";
+    els.sessionText.textContent = activeCount ? `${activeCount}/${desiredCount} ACTIVE${batchText}` : status.idleWanted ? "PENDING" : yielding ? "YIELD" : "IDLE";
     els.reconnectCount.textContent = status.reconnectCount || 0;
     setNotice(status.libraryError || status.cardScanError || status.message || "Ready");
     els.authText.textContent = cloud ? "Cloud mode uses the configured Steam refresh-token secret. QR login works for this container session, but update the secret for durable restarts." : "Authenticate once with Steam Mobile QR. The refresh token is protected with Windows DPAPI on this PC.";
@@ -252,11 +257,14 @@
       status = await api("/api/status");
       renderStatus();
       const cardsJustFinished = !!status.cardScanReady && !lastCardScanReady;
-      if (status.libraryReady && (status.libraryCount !== lastLibraryCount || cardsJustFinished)) {
+      const playtimeRevision = Number(status.playtimeRevision || 0);
+      const playtimeChanged = playtimeRevision !== lastPlaytimeRevision;
+      if (status.libraryReady && (status.libraryCount !== lastLibraryCount || cardsJustFinished || playtimeChanged)) {
         lastLibraryCount = status.libraryCount;
         await loadLibrary();
       }
       lastCardScanReady = !!status.cardScanReady;
+      lastPlaytimeRevision = playtimeRevision;
     } catch (err) {
       showError(err);
     }

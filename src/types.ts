@@ -49,6 +49,13 @@ export interface RuntimeState {
   lastConnectedAt: number | null;
   idleWanted: boolean;
   desiredIdling: number[];
+  idleBatchIndex: number;
+  idleBatchCount: number;
+  idleRotationAt: number | null;
+  playtimeSyncing: boolean;
+  playtimeSyncAt: number | null;
+  playtimeRevision: number;
+  playtimeSyncError: string | null;
   shuttingDown: boolean;
   runtimeMode: RuntimeMode;
 }

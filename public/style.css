@@ -298,6 +298,7 @@ select { cursor: pointer; }
   letter-spacing: .08em;
 }
 .state-tag.selected { color: var(--cyan-2); border-color: rgba(51,185,255,.34); }
+.state-tag.queued { color: var(--amber); border-color: rgba(245,183,75,.34); background: rgba(245,183,75,.035); }
 .state-tag.idling { color: var(--green); border-color: rgba(99,230,167,.35); background: rgba(99,230,167,.04); }
 .empty { display: grid; place-items: center; gap: 4px; padding: 54px 20px; color: var(--muted); text-align: center; }
 .empty strong { color: #afbed0; }

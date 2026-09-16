@@ -23,6 +23,17 @@ export interface ClientStatus {
   reconnectCount?: number;
   idleWanted?: boolean;
   idling?: number[];
+  desiredIdling?: number[];
+  queuedIdling?: number[];
+  idleBatchIndex?: number;
+  idleBatchCount?: number;
+  idleRotationAt?: number | null;
+  idleMaxConcurrent?: number;
+  idleRotateMinutes?: number;
+  playtimeSyncing?: boolean;
+  playtimeSyncAt?: number | null;
+  playtimeRevision?: number;
+  playtimeSyncError?: string | null;
   selected?: number[];
   hasSavedLogin?: boolean;
   qrDataUrl?: string | null;
