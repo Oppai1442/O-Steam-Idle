@@ -1,0 +1,49 @@
+name: Apply Steam idle fix
+
+on:
+  push:
+    branches: [fix/steam-32-rotation]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply patch
+        run: node scripts/apply-steam-idle-limit-fix.cjs
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck and build
+        run: |
+          npm run typecheck
+          npm run build
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          O_IDLE_DISABLE_BROWSER=1 node dist/src/server.js > /tmp/o-steam-idle.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3210/health | grep -q '^ok$'; then
+              break
+            fi
+            sleep 0.25
+          done
+          curl --fail --silent http://127.0.0.1:3210/health | grep -q '^ok$'
+      - name: Commit generated fix
+        shell: bash
+        run: |
+          rm -f .github/workflows/apply-idle-fix.yml scripts/apply-steam-idle-limit-fix.cjs
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: batch Steam idle sessions and refresh playtime"
+          git push origin HEAD:fix/steam-32-rotation
