@@ -1,6 +1,7 @@
 'use strict';
 
 import type { LibraryApp, RuntimeState, SettingsFile } from './types';
+import { isSteamSessionConflict, isSteamAuthRejection, recoveryBackoffMs } from './recovery';
 
 const http = require('http');
 const https = require('https');
@@ -30,6 +31,9 @@ const CRED_FILE = path.join(DATA, 'credentials.dat');
 const SETTINGS_FILE = path.join(DATA, 'settings.json');
 const EXTERNAL_RECHECK_MS = 30000;
 const IDLE_RESTORE_DELAY_MS = 2500;
+const CONNECT_TIMEOUT_MS = 45000;
+const RECONNECT_GRACE_MS = 60000;
+const RECONNECT_CHECK_MS = 5000;
 const STEAM_MAX_CONCURRENT_APPS = 32;
 const IDLE_MAX_CONCURRENT = Math.min(STEAM_MAX_CONCURRENT_APPS, Math.max(1, Number(process.env.O_IDLE_MAX_CONCURRENT || STEAM_MAX_CONCURRENT_APPS) || STEAM_MAX_CONCURRENT_APPS));
 const IDLE_ROTATE_MINUTES = Math.max(1, Number(process.env.O_IDLE_ROTATE_MINUTES || 30) || 30);
@@ -66,6 +70,13 @@ let state: RuntimeState = {
   sessionConflict: false,
   reconnecting: false,
   reconnectCount: 0,
+  recoveryAttempts: 0,
+  recoveryNextRetryAt: null,
+  recoveryLastReason: null,
+  recoveryBlocked: false,
+  connectingSince: null,
+  sessionConflictCount: 0,
+  lastSessionConflictAt: null,
   lastDisconnect: null,
   lastConnectedAt: null,
   idleWanted: false,
@@ -335,17 +346,84 @@ function sanitizeState() {
   };
 }
 
+// Keep desiredIdling and idleWanted intact during network-only failures.
+// A stopped game or a confirmed concurrent playing session still clears intent.
+function armSteamRecovery(reason: string, waitMs = RECONNECT_GRACE_MS) {
+  if (state.shuttingDown || state.recoveryBlocked) return;
+  const deadline = Date.now() + Math.max(0, waitMs);
+  if (!state.recoveryNextRetryAt || deadline < state.recoveryNextRetryAt) {
+    state.recoveryNextRetryAt = deadline;
+  }
+  state.recoveryLastReason = reason;
+  state.reconnecting = true;
+}
+
+function retrySteamConnection(reason: string, force = false): boolean {
+  if (state.shuttingDown || state.connected) return false;
+  if (state.recoveryBlocked && !force) return false;
+  if (force) {
+    state.recoveryBlocked = false;
+    state.sessionConflictCount = 0;
+    state.recoveryAttempts = 0;
+  }
+  let token: string | null = null;
+  try { token = loadRefreshToken(); }
+  catch (err) {
+    state.recoveryBlocked = true;
+    state.reconnecting = false;
+    state.connecting = false;
+    state.recoveryNextRetryAt = null;
+    state.message = `Saved Steam login cannot be loaded: ${err.message}. Sign in again with QR.`;
+    runtimeLog('ERROR', state.message);
+    return false;
+  }
+  if (!token) {
+    state.recoveryBlocked = true;
+    state.reconnecting = false;
+    state.connecting = false;
+    state.recoveryNextRetryAt = null;
+    state.message = 'No saved Steam login. Sign in with QR.';
+    return false;
+  }
+  state.recoveryAttempts += 1;
+  state.recoveryLastReason = reason;
+  state.reconnecting = true;
+  state.connecting = false; // The previous login attempt may be stuck forever.
+  state.recoveryNextRetryAt = Date.now() + Math.max(CONNECT_TIMEOUT_MS, recoveryBackoffMs(state.recoveryAttempts));
+  runtimeLog('WARN', `Steam recovery attempt #${state.recoveryAttempts} (${reason}); recreating connection without clearing idle intent`);
+  try {
+    connectWithRefreshToken(token, true);
+    return true;
+  } catch (err) {
+    state.connecting = false;
+    state.reconnecting = true;
+    state.connectingSince = null;
+    state.recoveryNextRetryAt = Date.now() + recoveryBackoffMs(state.recoveryAttempts);
+    state.message = `Steam recovery attempt failed: ${err.message}; retry scheduled.`;
+    runtimeLog('WARN', state.message);
+    return false;
+  }
+}
+
 function attachSteamEvents(client: any) {
   client.on('webSession', (_sessionID, cookies) => {
     webCookies = Array.isArray(cookies) ? cookies.slice() : [];
   });
 
   client.on('loggedOn', () => {
+    if (steam !== client) return;
     const wasReconnecting = state.reconnecting;
     state.connected = true;
     state.connecting = false;
     state.reconnecting = false;
     state.sessionConflict = false;
+    state.recoveryAttempts = 0;
+    state.recoveryNextRetryAt = null;
+    state.recoveryLastReason = null;
+    state.recoveryBlocked = false;
+    state.connectingSince = null;
+    state.sessionConflictCount = 0;
+    state.lastSessionConflictAt = null;
     state.steamID = client.steamID ? client.steamID.getSteamID64() : state.steamID;
     state.accountName = state.accountName || client.accountInfo?.name || null;
     state.lastConnectedAt = Date.now();
@@ -413,10 +491,13 @@ function attachSteamEvents(client: any) {
   });
 
   client.on('disconnected', (eresult, msg) => {
+    if (steam !== client) return;
     webCookies = [];
     state.connected = false;
     state.connecting = false;
     state.idling = [];
+    state.connectingSince = null;
+    cancelIdleRestore();
     cancelIdleRotation();
 
     if (state.shuttingDown) return;
@@ -432,47 +513,68 @@ function attachSteamEvents(client: any) {
       ? `Steam connection lost${msg ? `: ${msg}` : ''}. Reconnecting; idle will resume automatically...`
       : `Steam connection lost${msg ? `: ${msg}` : ''}. Reconnecting...`;
 
-    runtimeLog('WARN', `Disconnected (EResult=${Number(eresult || 0)}${msg ? `, ${msg}` : ''}); autoRelogin active`);
+    armSteamRecovery('Steam CM disconnected', RECONNECT_GRACE_MS);
+    runtimeLog('WARN', `Disconnected (EResult=${Number(eresult || 0)}${msg ? `, ${msg}` : ''}); autoRelogin active, watchdog armed`);
   });
 
-  client.on('error', err => {
+  client.on('error', (err: any) => {
+    if (steam !== client) return;
     const wasIdling = state.idleWanted || state.idling.length > 0;
     state.connected = false;
     state.connecting = false;
-    state.reconnecting = false;
+    state.connectingSince = null;
     state.idling = [];
+    cancelIdleRestore();
     cancelIdleRotation();
-
-    if (err?.eresult === 6 || err?.message === 'LoggedInElsewhere') {
-      cancelIdleRestore();
-      state.sessionConflict = true;
-
-      // Always rotate away from the colliding login identity. If we were
-      // idling, still yield the idle intent so this retry cannot fight a real
-      // Steam Desktop game launch.
-      steamLogonID = generateLogonID();
-      saveSettings();
-
-      if (wasIdling) {
-        state.idleWanted = false;
-        state.desiredIdling = [];
-        state.idleSuspended = true;
-        state.message = 'Steam session conflict while idling. Idle stopped; generated a new logon ID and will retry connection only.';
-      } else {
-        state.message = 'Steam session ID collision. Generated a new logon ID; retrying shortly...';
-      }
-
-      runtimeLog('WARN', `LoggedInElsewhere (EResult 6); rotated logonID to ${steamLogonID}; ${wasIdling ? 'idle yielded' : 'connection retry allowed'}`);
-      return;
-    }
+    if (state.shuttingDown) return;
 
     state.lastDisconnect = {
       at: Date.now(),
       eresult: Number(err?.eresult || 0),
       message: err?.message || String(err)
     };
-    state.message = `Steam fatal error: ${err.message}. Use saved login to reconnect.`;
-    runtimeLog('ERROR', `Steam error EResult=${Number(err?.eresult || 0)}: ${err.message}`);
+
+    if (isSteamSessionConflict(err)) {
+      const now = Date.now();
+      state.sessionConflictCount = state.lastSessionConflictAt && now - state.lastSessionConflictAt < 300000
+        ? state.sessionConflictCount + 1 : 1;
+      state.lastSessionConflictAt = now;
+      state.sessionConflict = true;
+      steamLogonID = generateLogonID();
+      saveSettings();
+
+      if (state.sessionConflictCount >= 3) {
+        // Never fight a real client in an endless login loop. Keep the user's
+        // selected games saved, but require an explicit retry after 3 conflicts.
+        state.idleWanted = false;
+        state.desiredIdling = [];
+        state.idleSuspended = true;
+        state.reconnecting = false;
+        state.recoveryBlocked = true;
+        state.recoveryNextRetryAt = null;
+        state.message = 'Repeated Steam session conflicts. Paused automatic recovery to avoid competing with another Steam client. Retry manually when safe.';
+      } else {
+        // One collision can follow a WARP IP change: preserve idle intent.
+        // The playingState(blocked) event remains the authority for yielding.
+        armSteamRecovery('session identity collision', 30000);
+        state.message = `Steam session identity collision; changed logonID and will reconnect in ~30s.${wasIdling ? ' Idle selection preserved.' : ''}`;
+      }
+      runtimeLog('WARN', `LoggedInElsewhere; new logonID=${steamLogonID}, consecutive=${state.sessionConflictCount}; idle preserved=${state.idleWanted}`);
+      return;
+    }
+
+    if (isSteamAuthRejection(err)) {
+      state.recoveryBlocked = true;
+      state.reconnecting = false;
+      state.recoveryNextRetryAt = null;
+      state.message = `Steam rejected the saved login (${err?.message || 'authentication error'}). Sign in again with QR.`;
+      runtimeLog('ERROR', state.message);
+      return;
+    }
+
+    armSteamRecovery('Steam client error', Math.min(30000, recoveryBackoffMs(state.recoveryAttempts + 1)));
+    state.message = `Steam connection error: ${err?.message || err}. Automatic reconnect scheduled; idle selection preserved.`;
+    runtimeLog('WARN', `Steam error EResult=${Number(err?.eresult || 0)}: ${err?.message || err}; recovery armed`);
   });
 
   client.on('refreshToken', token => {
@@ -492,8 +594,8 @@ function disposeSteamClient() {
   steam = null;
 }
 
-function connectWithRefreshToken(token: string) {
-  if (state.connected || state.connecting) return;
+function connectWithRefreshToken(token: string, recovering = false) {
+  if (state.connected || (state.connecting && !recovering)) return;
   disposeSteamClient();
 
   steam = new SteamUser({
@@ -503,9 +605,11 @@ function connectWithRefreshToken(token: string) {
   });
   attachSteamEvents(steam);
   state.connecting = true;
-  state.reconnecting = false;
+  state.connectingSince = Date.now();
+  state.reconnecting = recovering;
   state.sessionConflict = false;
-  state.message = 'Connecting to Steam...';
+  if (!recovering) state.recoveryNextRetryAt = Date.now() + CONNECT_TIMEOUT_MS;
+  state.message = recovering ? 'Recovering Steam connection; keeping idle selection...' : 'Connecting to Steam...';
   runtimeLog('INFO', `Connecting to Steam (logonID=${steamLogonID})`);
   steam.logOn({
     refreshToken: token,
@@ -516,6 +620,9 @@ function connectWithRefreshToken(token: string) {
 
 async function beginQRLogin(): Promise<void> {
   if (state.connected || state.connecting) throw new Error('Steam client is already connected/connecting');
+  state.recoveryBlocked = false;
+  state.recoveryNextRetryAt = null;
+  state.recoveryAttempts = 0;
   if (loginSession) {
     try { loginSession.cancelLoginAttempt(); } catch (_) {}
   }
@@ -1324,6 +1431,10 @@ function logoutForget() {
   state.idleSuspended = false;
   state.sessionConflict = false;
   state.reconnecting = false;
+  state.recoveryNextRetryAt = null;
+  state.recoveryAttempts = 0;
+  state.recoveryBlocked = false;
+  state.connectingSince = null;
   state.idleWanted = false;
   state.desiredIdling = [];
   cancelIdleRestore();
@@ -1439,10 +1550,17 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
     if (req.method === 'POST' && req.url === '/api/login/saved') {
+      state.recoveryBlocked = false;
       const token = loadRefreshToken();
       if (!token) return json(res, 404, { error: 'No saved login' });
       connectWithRefreshToken(token);
       return json(res, 200, { ok: true });
+    }
+    if (req.method === 'POST' && req.url === '/api/session/recover') {
+      if (state.connected) return json(res, 200, { ok: true, connected: true });
+      if (!hasSavedLogin()) return json(res, 404, { error: 'No saved login; sign in with QR' });
+      const attempted = retrySteamConnection('manual dashboard retry', true);
+      return json(res, attempted ? 200 : 503, { ok: attempted, reconnecting: state.reconnecting, message: state.message });
     }
     if (req.method === 'POST' && req.url === '/api/session/recheck') {
       const token = loadRefreshToken();
@@ -1559,6 +1677,21 @@ server.listen(PORT, HOST, () => {
     state.message = `Saved login could not be loaded: ${err.message}`;
   }
 });
+
+const steamRecoveryWatchdog = setInterval(() => {
+  if (state.shuttingDown || state.connected || state.recoveryBlocked || !hasSavedLogin()) return;
+  const now = Date.now();
+  // steam-user normally handles short outages. Intervene only on a stalled
+  // connection, or when a non-authentication fatal error left it offline.
+  if (state.connecting && state.connectingSince && now - state.connectingSince < CONNECT_TIMEOUT_MS) return;
+  if (!state.recoveryNextRetryAt) {
+    armSteamRecovery(state.connecting ? 'initial connection timed out' : 'offline session', state.connecting ? 0 : RECONNECT_GRACE_MS);
+  }
+  if (state.recoveryNextRetryAt && now >= state.recoveryNextRetryAt) {
+    retrySteamConnection(state.recoveryLastReason || 'watchdog timeout');
+  }
+}, RECONNECT_CHECK_MS);
+steamRecoveryWatchdog.unref?.();
 
 const playtimeSyncTimer = setInterval(() => {
   if (!state.connected || !state.idleWanted || state.cardScanRunning || state.playtimeSyncing) return;
