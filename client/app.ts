@@ -6,7 +6,7 @@ const $ = (s: string): any => document.querySelector(s);
 const els = {
   connection: $('#connection'), runtimeMode: $('#runtimeMode'), accountTitle: $('#accountTitle'), authText: $('#authText'),
   stateText: $('#stateText'), sessionText: $('#sessionText'), reconnectCount: $('#reconnectCount'),
-  qrBtn: $('#qrBtn'), savedBtn: $('#savedBtn'), logoutBtn: $('#logoutBtn'), qrWrap: $('#qrWrap'), qr: $('#qr'), qrHint: $('#qrHint'),
+  qrBtn: $('#qrBtn'), savedBtn: $('#savedBtn'), retryBtn: $('#retryBtn'), logoutBtn: $('#logoutBtn'), qrWrap: $('#qrWrap'), qr: $('#qr'), qrHint: $('#qrHint'),
   search: $('#search'), filter: $('#filter'), sort: $('#sort'), refreshBtn: $('#refreshBtn'), refreshCardsBtn: $('#refreshCardsBtn'),
   libraryCount: $('#libraryCount'), visibleCount: $('#visibleCount'), selectedCount: $('#selectedCount'), idlingCount: $('#idlingCount'),
   cardGamesCount: $('#cardGamesCount'), cardDropsCount: $('#cardDropsCount'), selectVisibleBtn: $('#selectVisibleBtn'),
@@ -279,6 +279,8 @@ function renderStatus() {
   els.exitBtn.classList.toggle('hidden', cloud);
 
   els.savedBtn.classList.toggle('hidden', !status.hasSavedLogin || connected || connecting || reconnecting);
+  els.retryBtn.classList.toggle('hidden', connected || !status.hasSavedLogin);
+  els.retryBtn.disabled = connected;
   els.logoutBtn.classList.toggle('hidden', !connected && !status.hasSavedLogin);
   els.qrBtn.disabled = connected || connecting || reconnecting;
   els.refreshBtn.disabled = !connected || !!status.cardScanRunning;
@@ -316,6 +318,9 @@ async function poll() {
 
 els.qrBtn.addEventListener('click', async () => {
   try { await api('/api/login/qr', {method:'POST'}); await poll(); } catch (e) { showError(e); }
+});
+els.retryBtn.addEventListener('click', async () => {
+  try { await api('/api/session/recover', {method:'POST'}); await poll(); } catch (e) { showError(e); }
 });
 els.savedBtn.addEventListener('click', async () => {
   try { await api('/api/login/saved', {method:'POST'}); await poll(); } catch (e) { showError(e); }

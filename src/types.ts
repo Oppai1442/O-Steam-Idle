@@ -45,6 +45,13 @@ export interface RuntimeState {
   sessionConflict: boolean;
   reconnecting: boolean;
   reconnectCount: number;
+  recoveryAttempts: number;
+  recoveryNextRetryAt: number | null;
+  recoveryLastReason: string | null;
+  recoveryBlocked: boolean;
+  connectingSince: number | null;
+  sessionConflictCount: number;
+  lastSessionConflictAt: number | null;
   lastDisconnect: LastDisconnect | null;
   lastConnectedAt: number | null;
   idleWanted: boolean;

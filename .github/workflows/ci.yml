@@ -23,6 +23,8 @@ jobs:
       - name: Typecheck backend and client
         run: npm run typecheck
 
+      - name: Run Steam recovery policy tests
+        run: npm test
       - name: Build local runtime
         run: npm run build
 
