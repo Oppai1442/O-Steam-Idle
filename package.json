@@ -13,7 +13,8 @@
     "typecheck:all": "npm run typecheck && npm --prefix cloudflare run typecheck",
     "start": "npm run build && node dist/src/server.js",
     "start:built": "node dist/src/server.js",
-    "token:export": "npm run build:server && node dist/scripts/export-refresh-token.js"
+    "token:export": "npm run build:server && node dist/scripts/export-refresh-token.js",
+    "test": "npm run build:server && node --test dist/src/recovery.test.js"
   },
   "dependencies": {
     "cheerio": "1.0.0",
