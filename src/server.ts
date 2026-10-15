@@ -2,6 +2,7 @@
 
 import type { LibraryApp, RuntimeState, SettingsFile } from './types';
 import { isSteamSessionConflict, isSteamAuthRejection, recoveryBackoffMs } from './recovery';
+import { canApplyIdle, hasPendingIdle, shouldYieldIdle } from './idle-policy';
 
 const http = require('http');
 const https = require('https');
@@ -31,6 +32,10 @@ const CRED_FILE = path.join(DATA, 'credentials.dat');
 const SETTINGS_FILE = path.join(DATA, 'settings.json');
 const EXTERNAL_RECHECK_MS = 30000;
 const IDLE_RESTORE_DELAY_MS = 2500;
+// Steam may send playingState(blocked=true) shortly AFTER loggedOn.
+// Never advertise games until the initial concurrent-session check can arrive.
+const LOGIN_PLAYING_STATE_GRACE_MS = 8000;
+const UNBLOCK_RESUME_DELAY_MS = 1000;
 const CONNECT_TIMEOUT_MS = 45000;
 const RECONNECT_GRACE_MS = 60000;
 const RECONNECT_CHECK_MS = 5000;
@@ -203,9 +208,11 @@ function scheduleIdleRotation(client: any) {
   idleRotationTimer.unref?.();
 }
 function applyIdleBatch(client: any, batchIndex = 0, reason = 'start') {
-  const owned = new Set(library.map(x => x.appid));
-  const desired = state.desiredIdling.filter(appid => !owned.size || owned.has(appid));
-  if (!desired.length) throw new Error('Selected games are no longer available');
+  // Ownership/cache snapshots can become temporarily incomplete after WARP
+  // recovery. Start Idle validates ownership; never silently discard desired
+  // AppIDs while reconciling an existing session.
+  const desired = state.desiredIdling.filter(appid => Number.isInteger(appid) && appid > 0);
+  if (!desired.length) throw new Error('No desired AppIDs available');
   state.desiredIdling = [...new Set(desired)];
   const plan = planIdleBatches(state.desiredIdling);
   if (plan.priority.length >= IDLE_MAX_CONCURRENT && plan.rotating.length) {
@@ -227,43 +234,41 @@ function applyIdleBatch(client: any, batchIndex = 0, reason = 'start') {
   scheduleIdleRotation(client);
 }
 
-function scheduleIdleRestore(client, reason = 'reconnect') {
+function scheduleIdleRestore(client: any, reason = 'reconnect', delayMs = IDLE_RESTORE_DELAY_MS) {
   cancelIdleRestore();
   cancelIdleRotation();
-  if (!state.idleWanted || !state.desiredIdling.length || state.idleSuspended) return;
+  if (!hasPendingIdle(state)) return;
 
   idleRestoreTimer = setTimeout(() => {
     idleRestoreTimer = null;
-    if (steam !== client || !state.connected || !state.idleWanted || state.shuttingDown) return;
-    if (state.externalPlaying || client.playingState?.blocked) {
-      state.idleWanted = false;
-      state.desiredIdling = [];
-      state.idling = [];
+    if (steam !== client || state.shuttingDown || !hasPendingIdle(state)) return;
+    if (!state.connected) return; // watchdog will retry on reconnect.
+
+    if (!canApplyIdle({
+      ...state,
+      clientBlocked: !!client.playingState?.blocked
+    })) {
       state.idleSuspended = true;
-      state.message = 'Idle not resumed: another Steam session is playing. Press Start Idle manually later.';
-      runtimeLog('WARN', 'Idle resume cancelled because another Steam session is playing');
-      return;
-    }
-
-    const owned = new Set(library.map(x => x.appid));
-    const clean = state.desiredIdling.filter(appid => !owned.size || owned.has(appid));
-    if (!clean.length) {
-      state.idleWanted = false;
-      state.desiredIdling = [];
       state.idling = [];
-      state.message = 'Idle resume cancelled: selected games are no longer available.';
+      state.message = 'Waiting: another Steam session is playing. Idle will resume automatically when it stops.';
+      runtimeLog('INFO', `Idle deferred after ${reason}: Steam playing session still active`);
       return;
     }
 
+    // An earlier playingState(blocked=true) must not require manual Start.
+    state.idleSuspended = false;
+    state.externalPlaying = false;
+    state.externalPlayingApp = 0;
     try {
-      state.desiredIdling = clean.slice();
-      applyIdleBatch(client, state.idleBatchIndex, `reconnect/${reason}`);
+      applyIdleBatch(client, state.idleBatchIndex, `resume/${reason}`);
     } catch (err) {
+      // Keep desired selection even if gamesPlayed temporarily fails.
       state.idling = [];
-      state.message = `Connected, but idle resume failed: ${err.message}`;
-      runtimeLog('ERROR', `Idle resume failed: ${err.message}`);
+      state.message = `Idle resume failed: ${err.message}; will retry.`;
+      runtimeLog('WARN', state.message);
     }
-  }, IDLE_RESTORE_DELAY_MS);
+  }, delayMs);
+  idleRestoreTimer.unref?.();
 }
 
 function ps(script: string, input = '') {
@@ -424,6 +429,8 @@ function attachSteamEvents(client: any) {
     state.connectingSince = null;
     state.sessionConflictCount = 0;
     state.lastSessionConflictAt = null;
+    state.externalPlaying = false;
+    state.externalPlayingApp = 0;
     state.steamID = client.steamID ? client.steamID.getSteamID64() : state.steamID;
     state.accountName = state.accountName || client.accountInfo?.name || null;
     state.lastConnectedAt = Date.now();
@@ -459,10 +466,12 @@ function attachSteamEvents(client: any) {
       try { startIdle(DEFAULT_APPIDS); } catch (err) { runtimeLog('WARN', `Auto-start skipped: ${err.message}`); }
     }
 
-    scheduleIdleRestore(client, wasReconnecting ? 'Steam reconnect' : 'login');
+    scheduleIdleRestore(client, wasReconnecting ? 'Steam reconnect' : 'login', LOGIN_PLAYING_STATE_GRACE_MS);
   });
 
   client.on('playingState', (blocked, playingApp) => {
+    if (steam !== client) return;
+    const wasBlocked = state.externalPlaying || state.idleSuspended;
     const appid = Number(playingApp || 0);
     state.externalPlaying = !!blocked;
     state.externalPlayingApp = blocked ? appid : 0;
@@ -470,23 +479,27 @@ function attachSteamEvents(client: any) {
     if (blocked) {
       cancelIdleRestore();
       cancelIdleRotation();
-
       if (state.idling.length) {
-        try { client.gamesPlayed([]); } catch (_) {}
+        try { client.gamesPlayed([]); } catch (err) {
+          runtimeLog('WARN', `Could not clear idle during yield: ${err?.message || err}`);
+        }
       }
       state.idling = [];
-      state.idleWanted = false;
-      state.desiredIdling = [];
-      state.idleSuspended = true;
+      // Never erase desiredIdling or idleWanted here. PlayingState is a
+      // temporary blocker, not an explicit user Stop.
+      state.idleSuspended = hasPendingIdle(state);
       state.message = appid
-        ? `Idle suspended: another Steam session is playing App ${appid}`
-        : 'Idle suspended: another Steam session is playing';
-      runtimeLog('WARN', appid
-        ? `Yielding because another Steam session is playing App ${appid}`
-        : 'Yielding because another Steam session is playing');
-    } else if (state.idleSuspended) {
-      state.message = 'Other Steam session stopped. Idle remains stopped; press Start Idle to resume.';
-      runtimeLog('INFO', 'Other Steam playing session stopped; manual idle resume required');
+        ? `Yielding to Steam Desktop (App ${appid}); will auto-resume idle when it stops.`
+        : 'Yielding to another Steam session; will auto-resume idle when it stops.';
+      runtimeLog('INFO', `Steam reports external playing AppID=${appid}; idle armed=${state.idleWanted}, desired=${state.desiredIdling.length}`);
+    } else if (wasBlocked && hasPendingIdle(state)) {
+      state.idleSuspended = false;
+      state.message = 'Other Steam session stopped; resuming idle...';
+      runtimeLog('INFO', 'Steam reported external playing stopped; restoring idle');
+      scheduleIdleRestore(client, 'Steam Desktop stopped playing', UNBLOCK_RESUME_DELAY_MS);
+    } else if (wasBlocked) {
+      state.idleSuspended = false;
+      state.message = 'Other Steam session stopped. No idle requested.';
     }
   });
 
@@ -497,6 +510,11 @@ function attachSteamEvents(client: any) {
     state.connecting = false;
     state.idling = [];
     state.connectingSince = null;
+    // A previously blocked session is unknown after a network drop. The
+    // post-login grace period + playingState event will determine whether the
+    // other Steam client is still in-game.
+    state.externalPlaying = false;
+    state.externalPlayingApp = 0;
     cancelIdleRestore();
     cancelIdleRotation();
 
@@ -519,11 +537,12 @@ function attachSteamEvents(client: any) {
 
   client.on('error', (err: any) => {
     if (steam !== client) return;
-    const wasIdling = state.idleWanted || state.idling.length > 0;
     state.connected = false;
     state.connecting = false;
     state.connectingSince = null;
     state.idling = [];
+    state.externalPlaying = false;
+    state.externalPlayingApp = 0;
     cancelIdleRestore();
     cancelIdleRotation();
     if (state.shuttingDown) return;
@@ -536,30 +555,23 @@ function attachSteamEvents(client: any) {
 
     if (isSteamSessionConflict(err)) {
       const now = Date.now();
-      state.sessionConflictCount = state.lastSessionConflictAt && now - state.lastSessionConflictAt < 300000
+      state.sessionConflictCount = state.lastSessionConflictAt && now - state.lastSessionConflictAt < 600000
         ? state.sessionConflictCount + 1 : 1;
       state.lastSessionConflictAt = now;
       state.sessionConflict = true;
+      // LoggedInElsewhere can mean login-identity collision OR that another
+      // Steam session started a game. It is not proof idle was stopped by the
+      // user. Reconnect without force/kick and wait for playingState.
       steamLogonID = generateLogonID();
       saveSettings();
-
-      if (state.sessionConflictCount >= 3) {
-        // Never fight a real client in an endless login loop. Keep the user's
-        // selected games saved, but require an explicit retry after 3 conflicts.
-        state.idleWanted = false;
-        state.desiredIdling = [];
-        state.idleSuspended = true;
-        state.reconnecting = false;
-        state.recoveryBlocked = true;
-        state.recoveryNextRetryAt = null;
-        state.message = 'Repeated Steam session conflicts. Paused automatic recovery to avoid competing with another Steam client. Retry manually when safe.';
-      } else {
-        // One collision can follow a WARP IP change: preserve idle intent.
-        // The playingState(blocked) event remains the authority for yielding.
-        armSteamRecovery('session identity collision', 30000);
-        state.message = `Steam session identity collision; changed logonID and will reconnect in ~30s.${wasIdling ? ' Idle selection preserved.' : ''}`;
-      }
-      runtimeLog('WARN', `LoggedInElsewhere; new logonID=${steamLogonID}, consecutive=${state.sessionConflictCount}; idle preserved=${state.idleWanted}`);
+      const waitMs = Math.max(30000, recoveryBackoffMs(state.sessionConflictCount));
+      armSteamRecovery('Steam session conflict (non-forcing probe)', waitMs);
+      // armSteamRecovery only moves the retry earlier: enforce the longer
+      // conflict cooldown so multiple logins never hammer the active client.
+      state.recoveryNextRetryAt = now + waitMs;
+      state.idleSuspended = hasPendingIdle(state);
+      state.message = `Steam session conflict. Waiting ${Math.round(waitMs / 1000)}s before retry; idle selection retained.`;
+      runtimeLog('WARN', `LoggedInElsewhere; rotated logonID, retry in ${waitMs}ms, idle desired=${state.desiredIdling.length}`);
       return;
     }
 
@@ -1343,13 +1355,6 @@ async function refreshCardData() {
 function startIdle(appids: unknown[]) {
   if (!state.connected || !steam) throw new Error('Not connected to Steam');
 
-  if (steam.playingState?.blocked || state.externalPlaying) {
-    const appid = Number(steam.playingState?.appid || state.externalPlayingApp || 0);
-    throw new Error(appid
-      ? `Another Steam session is already playing App ${appid}. Stop it there before idling.`
-      : 'Another Steam session is already playing. Stop it there before idling.');
-  }
-
   const owned = new Set(library.map(x => x.appid));
   const requested = appids.map(Number).filter(x => Number.isInteger(x) && x > 0 && owned.has(x));
   const priorityOwned = [...priorityAppIds].filter(appid => owned.has(appid));
@@ -1365,13 +1370,18 @@ function startIdle(appids: unknown[]) {
   state.desiredIdling = clean.slice();
   state.idleWanted = true;
   state.selected = clean.slice();
-  state.idleSuspended = false;
-  state.externalPlaying = false;
-  state.externalPlayingApp = 0;
+  const blocked = shouldYieldIdle({ ...state, clientBlocked: !!steam.playingState?.blocked });
+  state.idleSuspended = blocked;
   state.idleBatchIndex = 0;
   state.idleBatchCount = planIdleBatches(clean).batches.length;
   try {
-    applyIdleBatch(steam, 0, 'start');
+    if (blocked) {
+      state.idling = [];
+      state.message = 'Idle armed; waiting for Steam Desktop to stop playing.';
+      runtimeLog('INFO', `Idle armed while another session is playing: ${clean.length} games`);
+    } else {
+      applyIdleBatch(steam, 0, 'start');
+    }
   } catch (err) {
     state.idling = [];
     state.desiredIdling = [];

@@ -1,6 +1,6 @@
 {
   "name": "o-steam-idle",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "Local-first Steam playtime idler with card visibility and Cloudflare Container deployment support",
   "main": "dist/src/server.js",
@@ -14,7 +14,7 @@
     "start": "npm run build && node dist/src/server.js",
     "start:built": "node dist/src/server.js",
     "token:export": "npm run build:server && node dist/scripts/export-refresh-token.js",
-    "test": "npm run build:server && node --test dist/src/recovery.test.js"
+    "test": "npm run build:server && node --test dist/src/*.test.js"
   },
   "dependencies": {
     "cheerio": "1.0.0",
