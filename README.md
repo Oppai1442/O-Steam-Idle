@@ -161,3 +161,8 @@ docs/CLOUDFLARE.md         Cloud setup guide
 ```
 
 The backend is compiled with `tsc`; the browser client is bundled with `esbuild`; Wrangler compiles the Cloudflare Worker TypeScript directly.
+
+
+## Diagnostics
+
+Use **Export diagnostics** on the local dashboard to download the structured event log. The app stores rotated JSONL files at `data/diagnostics.jsonl` and `data/diagnostics.jsonl.1` (1 MiB each) and keeps the existing `data/runtime.log`. An event is written when an idle batch changes, when the client connects/disconnects, when Steam sends `playingState`, when reconnect is attempted, and once per minute as a heartbeat. The exported file excludes credentials, Steam tokens, cookies, QR login details, and full API request bodies. It does include app IDs and connection metadata. For support, export immediately after the symptom; older records rotate out. Logs from before installing this version cannot be reconstructed.

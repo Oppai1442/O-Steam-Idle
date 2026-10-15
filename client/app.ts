@@ -11,7 +11,7 @@ const els = {
   libraryCount: $('#libraryCount'), visibleCount: $('#visibleCount'), selectedCount: $('#selectedCount'), idlingCount: $('#idlingCount'),
   cardGamesCount: $('#cardGamesCount'), cardDropsCount: $('#cardDropsCount'), selectVisibleBtn: $('#selectVisibleBtn'),
   selectDropsBtn: $('#selectDropsBtn'), prioritySelectedBtn: $('#prioritySelectedBtn'), clearPriorityBtn: $('#clearPriorityBtn'),
-  clearBtn: $('#clearBtn'), manualBtn: $('#manualBtn'), copyBtn: $('#copyBtn'),
+  clearBtn: $('#clearBtn'), manualBtn: $('#manualBtn'), copyBtn: $('#copyBtn'), exportLogBtn: $('#exportLogBtn'),
   stopBtn: $('#stopBtn'), startBtn: $('#startBtn'), exitBtn: $('#exitBtn'), notice: $('#notice'), games: $('#games'), emptyState: $('#emptyState')
 };
 
@@ -378,6 +378,15 @@ els.manualBtn.addEventListener('click', async () => {
     await loadLibrary();
     setNotice(`Added ${out.added || 0} manual AppID${out.added === 1 ? '' : 's'}.`);
   } catch (e) { showError(e); }
+});
+els.exportLogBtn.addEventListener('click', () => {
+  const link = document.createElement('a');
+  link.href = '/api/diagnostics/export';
+  link.download = 'o-steam-idle-diagnostics.jsonl.txt';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setNotice('Exporting diagnostic log (no Steam tokens or cookies).');
 });
 els.copyBtn.addEventListener('click', async () => {
   const text = [...selected].sort((a,b) => a-b).join(',');
