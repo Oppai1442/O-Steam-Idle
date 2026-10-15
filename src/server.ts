@@ -3,6 +3,7 @@
 import type { LibraryApp, RuntimeState, SettingsFile } from './types';
 import { isSteamSessionConflict, isSteamAuthRejection, recoveryBackoffMs } from './recovery';
 import { canApplyIdle, hasPendingIdle, shouldYieldIdle } from './idle-policy';
+import { createDiagnostics } from './diagnostics';
 
 const http = require('http');
 const https = require('https');
@@ -46,6 +47,7 @@ const IDLE_ROTATE_MS = IDLE_ROTATE_MINUTES * 60 * 1000;
 const PLAYTIME_SYNC_MINUTES = Math.max(1, Number(process.env.O_IDLE_PLAYTIME_SYNC_MINUTES || 5) || 5);
 const PLAYTIME_SYNC_MS = PLAYTIME_SYNC_MINUTES * 60 * 1000;
 const LOG_FILE = path.join(DATA, 'runtime.log');
+const diagnostics = createDiagnostics(path.join(DATA, 'diagnostics.jsonl'));
 fs.mkdirSync(DATA, { recursive: true });
 
 let steam: any = null;
@@ -148,6 +150,19 @@ try {
   }
 } catch (_) {}
 
+function diagnostic(event: string, extra: Record<string, unknown> = {}) {
+  diagnostics.emit(event, {
+    connected: state.connected, connecting: state.connecting, reconnecting: state.reconnecting,
+    idleWanted: state.idleWanted, idleSuspended: state.idleSuspended,
+    externalPlaying: state.externalPlaying, externalPlayingApp: state.externalPlayingApp,
+    activeCount: state.idling.length, desiredCount: state.desiredIdling.length,
+    selectedCount: state.selected.length, priorityCount: priorityAppIds.size,
+    batchIndex: state.idleBatchIndex, batchCount: state.idleBatchCount,
+    reconnectCount: state.reconnectCount, recoveryAttempts: state.recoveryAttempts,
+    sessionConflictCount: state.sessionConflictCount, recoveryBlocked: state.recoveryBlocked,
+    ...extra
+  });
+}
 function runtimeLog(level: 'INFO' | 'WARN' | 'ERROR', message: string) {
   const line = `[${new Date().toISOString()}] [${level}] ${message}`;
   if (level === 'ERROR') console.error(line);
@@ -221,8 +236,10 @@ function applyIdleBatch(client: any, batchIndex = 0, reason = 'start') {
   const index = ((Number(batchIndex) || 0) % plan.batches.length + plan.batches.length) % plan.batches.length;
   const batch = plan.batches[index];
   if (!batch.length) throw new Error('No games available for the active idle batch');
+  diagnostic('idle.batch.request', { reason, nextBatchIndex: index, activeAppIds: batch, priorityAppIds: plan.priority });
   client.gamesPlayed(batch, false);
   state.idling = batch.slice();
+  diagnostic('idle.batch.applied', { reason, activeAppIds: batch });
   state.idleBatchIndex = index;
   state.idleBatchCount = plan.batches.length;
   const queued = state.desiredIdling.length - batch.length;
@@ -395,6 +412,7 @@ function retrySteamConnection(reason: string, force = false): boolean {
   state.reconnecting = true;
   state.connecting = false; // The previous login attempt may be stuck forever.
   state.recoveryNextRetryAt = Date.now() + Math.max(CONNECT_TIMEOUT_MS, recoveryBackoffMs(state.recoveryAttempts));
+  diagnostic('steam.recovery_attempt', { reason, attempt: state.recoveryAttempts });
   runtimeLog('WARN', `Steam recovery attempt #${state.recoveryAttempts} (${reason}); recreating connection without clearing idle intent`);
   try {
     connectWithRefreshToken(token, true);
@@ -421,6 +439,7 @@ function attachSteamEvents(client: any) {
     state.connected = true;
     state.connecting = false;
     state.reconnecting = false;
+    diagnostic('steam.logged_on');
     state.sessionConflict = false;
     state.recoveryAttempts = 0;
     state.recoveryNextRetryAt = null;
@@ -475,6 +494,7 @@ function attachSteamEvents(client: any) {
     const appid = Number(playingApp || 0);
     state.externalPlaying = !!blocked;
     state.externalPlayingApp = blocked ? appid : 0;
+    diagnostic('steam.playing_state', { blocked: !!blocked, appid });
 
     if (blocked) {
       cancelIdleRestore();
@@ -531,6 +551,7 @@ function attachSteamEvents(client: any) {
       ? `Steam connection lost${msg ? `: ${msg}` : ''}. Reconnecting; idle will resume automatically...`
       : `Steam connection lost${msg ? `: ${msg}` : ''}. Reconnecting...`;
 
+    diagnostic('steam.disconnected', { eresult: Number(eresult || 0), reason: String(msg || '').slice(0,120) });
     armSteamRecovery('Steam CM disconnected', RECONNECT_GRACE_MS);
     runtimeLog('WARN', `Disconnected (EResult=${Number(eresult || 0)}${msg ? `, ${msg}` : ''}); autoRelogin active, watchdog armed`);
   });
@@ -553,6 +574,7 @@ function attachSteamEvents(client: any) {
       message: err?.message || String(err)
     };
 
+    diagnostic('steam.error', { eresult: Number(err?.eresult || 0), errorCode: String(err?.code || err?.message || 'unknown').slice(0,120) });
     if (isSteamSessionConflict(err)) {
       const now = Date.now();
       state.sessionConflictCount = state.lastSessionConflictAt && now - state.lastSessionConflictAt < 600000
@@ -571,6 +593,7 @@ function attachSteamEvents(client: any) {
       state.recoveryNextRetryAt = now + waitMs;
       state.idleSuspended = hasPendingIdle(state);
       state.message = `Steam session conflict. Waiting ${Math.round(waitMs / 1000)}s before retry; idle selection retained.`;
+      diagnostic('steam.session_conflict', { retryInMs: waitMs, logonIDChanged: true });
       runtimeLog('WARN', `LoggedInElsewhere; rotated logonID, retry in ${waitMs}ms, idle desired=${state.desiredIdling.length}`);
       return;
     }
@@ -622,6 +645,7 @@ function connectWithRefreshToken(token: string, recovering = false) {
   state.sessionConflict = false;
   if (!recovering) state.recoveryNextRetryAt = Date.now() + CONNECT_TIMEOUT_MS;
   state.message = recovering ? 'Recovering Steam connection; keeping idle selection...' : 'Connecting to Steam...';
+  diagnostic('steam.connect_attempt', { source: recovering ? 'recovery' : 'initial' });
   runtimeLog('INFO', `Connecting to Steam (logonID=${steamLogonID})`);
   steam.logOn({
     refreshToken: token,
@@ -1374,6 +1398,7 @@ function startIdle(appids: unknown[]) {
   state.idleSuspended = blocked;
   state.idleBatchIndex = 0;
   state.idleBatchCount = planIdleBatches(clean).batches.length;
+  diagnostic('idle.start', { desiredAppIds: clean });
   try {
     if (blocked) {
       state.idling = [];
@@ -1394,6 +1419,7 @@ function startIdle(appids: unknown[]) {
 }
 
 function stopIdle() {
+  diagnostic('idle.stop_requested', { previousActiveCount: state.idling.length, previousDesiredCount: state.desiredIdling.length });
   cancelIdleRestore();
   cancelIdleRotation();
   if (steam && state.connected) {
@@ -1459,6 +1485,7 @@ function logoutForget() {
 let shutdownStarted = false;
 function gracefulShutdown(reason = 'shutdown') {
   if (shutdownStarted) return;
+  diagnostic('process.shutdown', { reason });
   shutdownStarted = true;
   state.shuttingDown = true;
   state.message = 'Shutting down...';
@@ -1553,6 +1580,18 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && req.url === '/api/status') return json(res, 200, sanitizeState());
+    if (req.method === 'GET' && req.url === '/api/diagnostics/recent') return json(res, 200, { events: diagnostics.recent() });
+    if (req.method === 'GET' && req.url === '/api/diagnostics/export') {
+      const body = Buffer.from(diagnostics.exportText(), 'utf8');
+      res.writeHead(200, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="o-steam-idle-diagnostics.jsonl.txt"',
+        'Content-Length': body.length,
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff'
+      });
+      return res.end(body);
+    }
     if (req.method === 'GET' && req.url === '/api/library') return json(res, 200, { apps: library, ready: state.libraryReady, error: state.libraryError });
 
     if (req.method === 'POST' && req.url === '/api/login/qr') {
@@ -1702,6 +1741,21 @@ const steamRecoveryWatchdog = setInterval(() => {
   }
 }, RECONNECT_CHECK_MS);
 steamRecoveryWatchdog.unref?.();
+
+diagnostic('process.started', { reason: CLOUD_MODE ? 'cloud' : 'local' });
+let lastDiagnosticState = '';
+const diagnosticsHeartbeat = setInterval(() => {
+  const snapshot = [state.connected, state.connecting, state.reconnecting,
+    state.idleWanted, state.idleSuspended, state.externalPlaying,
+    state.idling.length, state.desiredIdling.length, state.idleBatchIndex,
+    state.recoveryAttempts, state.recoveryBlocked].join('|');
+  if (snapshot !== lastDiagnosticState) {
+    diagnostic('state.transition', { previousActiveCount: Number((lastDiagnosticState.split('|')[6] || 0)) });
+    lastDiagnosticState = snapshot;
+  }
+  diagnostic('state.heartbeat', { blocked: !!steam?.playingState?.blocked });
+}, 60000);
+diagnosticsHeartbeat.unref?.();
 
 const playtimeSyncTimer = setInterval(() => {
   if (!state.connected || !state.idleWanted || state.cardScanRunning || state.playtimeSyncing) return;
