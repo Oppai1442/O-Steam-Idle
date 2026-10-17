@@ -12,7 +12,7 @@ test('80 selected / 12 pinned always occupies 32 Steam slots, including last bat
     assert.equal(new Set(batch).size,32);
     assert.deepEqual(batch.slice(0,12),pinned);
   }
-  assert.deepEqual(plan.batches[3].slice(12),[73,74,75,76,77,78,79,80,13,14,15,16]);
+  assert.deepEqual(plan.batches[3].slice(12),[73,74,75,76,77,78,79,80,13,14,15,16,17,18,19,20,21,22,23,24]);
   assert.equal(new Set(plan.batches.flat()).size,80);
 });
 test('110 selected / 5 pinned always fills batches without duplicates', () => {
