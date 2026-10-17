@@ -4,6 +4,7 @@ import type { LibraryApp, RuntimeState, SettingsFile } from './types';
 import { isSteamSessionConflict, isSteamAuthRejection, recoveryBackoffMs } from './recovery';
 import { canApplyIdle, hasPendingIdle, shouldYieldIdle } from './idle-policy';
 import { createDiagnostics } from './diagnostics';
+import { planCircularIdleBatches } from './idle-rotation';
 
 const http = require('http');
 const https = require('https');
@@ -183,24 +184,9 @@ function cancelIdleRotation() {
   state.idleRotationAt = null;
 }
 function planIdleBatches(appids: number[]) {
-  const desired = [...new Set(appids.map(Number).filter(id => Number.isInteger(id) && id > 0))];
-  const desiredSet = new Set(desired);
-  const priority = [...priorityAppIds].filter(appid => desiredSet.has(appid)).slice(0, IDLE_MAX_CONCURRENT);
-  const pinned = new Set(priority);
-  const rotating = desired.filter(appid => !pinned.has(appid));
-  const rotatingSlots = Math.max(0, IDLE_MAX_CONCURRENT - priority.length);
-  const batches: number[][] = [];
-
-  if (!rotating.length || rotatingSlots === 0) {
-    batches.push(priority.slice());
-  } else {
-    for (let i = 0; i < rotating.length; i += rotatingSlots) {
-      batches.push([...priority, ...rotating.slice(i, i + rotatingSlots)]);
-    }
-  }
-
-  return { desired, priority, rotating, rotatingSlots, batches };
+  return planCircularIdleBatches(appids, [...priorityAppIds], IDLE_MAX_CONCURRENT);
 }
+
 function scheduleIdleRotation(client: any) {
   cancelIdleRotation();
   const plan = planIdleBatches(state.desiredIdling);
