@@ -22,6 +22,7 @@ export interface ClientStatus {
   externalPlayingApp?: number;
   reconnectCount?: number;
   idleWanted?: boolean;
+  idleSuspended?: boolean;
   idling?: number[];
   desiredIdling?: number[];
   queuedIdling?: number[];

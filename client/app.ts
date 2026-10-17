@@ -286,7 +286,19 @@ function renderStatus() {
   els.refreshBtn.disabled = !connected || !!status.cardScanRunning;
   els.refreshCardsBtn.disabled = !connected || !!status.cardScanRunning || !status.libraryReady;
   els.refreshCardsBtn.textContent = status.cardScanRunning ? 'Scanning…' : 'Cards only';
-  els.startBtn.disabled = !connected || yielding || selected.size === 0;
+  const desired = new Set<number>(status.desiredIdling || []);
+  const pinned = status.priorityAppIds || [];
+  const effective = new Set<number>([...selected, ...pinned]);
+  const selectionChanged = desired.size !== effective.size || [...effective].some(id => !desired.has(id));
+  const running = !!status.idleWanted;
+  const pending = running && (!connected || yielding || !!status.idleSuspended);
+  els.startBtn.textContent = running
+    ? selectionChanged ? 'Apply changes' : pending ? 'Idle armed · waiting' : 'Idling · active'
+    : '▶ Start idle';
+  els.startBtn.disabled = !connected || (!running && (yielding || effective.size === 0)) || (running && !selectionChanged);
+  els.startBtn.title = running
+    ? selectionChanged ? 'Restart idle with the current selection' : 'Idle session is already armed. Use Stop to end it.'
+    : 'Start idling the selected games';
   els.stopBtn.disabled = !(status.idleWanted || (status.idling || []).length);
 
   if (status.qrDataUrl) {
