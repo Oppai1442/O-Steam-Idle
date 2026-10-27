@@ -29,7 +29,8 @@
   ],
   "vars": {
     "O_IDLE_AUTO_START": "0",
-    "O_IDLE_DEFAULT_APPIDS": ""
+    "O_IDLE_DEFAULT_APPIDS": "",
+    "O_IDLE_PRIORITY_APPIDS": ""
   },
   "observability": {
     "enabled": true
