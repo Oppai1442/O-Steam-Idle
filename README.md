@@ -93,7 +93,7 @@ Cloud mode uses:
 Browser -> Cloudflare Worker (Basic Auth) -> singleton Container -> Node/steam-user -> Steam
 ```
 
-For the full setup, including Worker secrets, token export, Docker/Wrangler commands, and automatic idle recovery after a fresh container boot, read [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md).
+For GitHub-connected Workers Builds (without local Docker), Worker secrets, token export, durable idle preferences and automatic recovery, see [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md).
 
 Short version:
 
@@ -112,7 +112,7 @@ npx wrangler secret put STEAM_REFRESH_TOKEN
 npx wrangler deploy
 ```
 
-Cloudflare Container disk is ephemeral, so the durable cloud credential source is the `STEAM_REFRESH_TOKEN` Worker secret. Set `O_IDLE_DEFAULT_APPIDS` and `O_IDLE_AUTO_START=1` in `cloudflare/wrangler.jsonc` if you want the idle set to restart automatically after a completely fresh container boot.
+Cloudflare Container disk is ephemeral. Cloud credentials come from the `STEAM_REFRESH_TOKEN` encrypted Worker secret; non-secret game selection, Priority and Start/Stop intent are persisted in Durable Object storage. For a brand-new container identity, you can seed the first idle session with `O_IDLE_DEFAULT_APPIDS`, `O_IDLE_PRIORITY_APPIDS` and `O_IDLE_AUTO_START=1` in `cloudflare/wrangler.jsonc`. Subsequent dashboard changes are retained across container restarts.
 
 ## Environment variables
 
@@ -123,7 +123,8 @@ Cloudflare Container disk is ephemeral, so the durable cloud credential source i
 | `O_IDLE_CLOUD` | Enable cloud runtime behavior | `0` |
 | `O_IDLE_DISABLE_BROWSER` | Do not auto-open a local browser | `0` |
 | `STEAM_REFRESH_TOKEN` | External refresh-token source (used by cloud) | empty |
-| `O_IDLE_DEFAULT_APPIDS` | Comma/space separated default AppIDs | empty |
+| `O_IDLE_DEFAULT_APPIDS` | Comma/space separated first-boot default AppIDs | empty |
+| `O_IDLE_PRIORITY_APPIDS` | Comma/space separated first-boot pinned priority AppIDs (cloud) | empty |
 | `O_IDLE_AUTO_START` | Auto-start default AppIDs after Steam login | `0` |
 
 ## Security
