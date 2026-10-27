@@ -1,5 +1,6 @@
 import { Container, getContainer } from '@cloudflare/containers';
 import { env as workerEnv } from 'cloudflare:workers';
+import { initialCloudConfig, normalizeCloudConfig, type CloudIdleConfig } from './cloud-state';
 
 const BASIC_USER = 'o-steam-idle';
 
@@ -7,6 +8,7 @@ interface Env {
   O_IDLE_ACCESS_PASSWORD: string;
   O_IDLE_AUTO_START?: string;
   O_IDLE_DEFAULT_APPIDS?: string;
+  O_IDLE_PRIORITY_APPIDS?: string;
   STEAM_REFRESH_TOKEN?: string;
   O_STEAM_IDLE: any;
 }
@@ -22,7 +24,8 @@ export class OSteamIdleContainer extends Container {
     O_IDLE_HOST: '0.0.0.0',
     O_IDLE_DISABLE_BROWSER: '1',
     O_IDLE_AUTO_START: runtimeEnv.O_IDLE_AUTO_START || '0',
-    O_IDLE_DEFAULT_APPIDS: runtimeEnv.O_IDLE_DEFAULT_APPIDS || '',
+    O_IDLE_DEFAULT_APPIDS: '',
+    O_IDLE_PRIORITY_APPIDS: '',
     STEAM_REFRESH_TOKEN: runtimeEnv.STEAM_REFRESH_TOKEN || ''
   };
 
@@ -32,8 +35,42 @@ export class OSteamIdleContainer extends Container {
     // This keeps the singleton container alive until a rollout/host restart.
   }
 
-  onStart() {
-    console.log('O-Steam-Idle container started');
+  async onStart() {
+    console.log('O-Steam-Idle container started; restoring durable idle configuration');
+    const saved = await this.ctx.storage.get<CloudIdleConfig>('cloud_idle_config_v1');
+    const config = saved ? normalizeCloudConfig(saved) : initialCloudConfig(runtimeEnv);
+    if (!saved) await this.ctx.storage.put('cloud_idle_config_v1', config);
+    const result = await this.containerFetch('http://localhost:3210/api/cloud/bootstrap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+    if (!result.ok) throw new Error('Cloud idle bootstrap failed: ' + result.status);
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const { pathname } = new URL(request.url);
+    if (pathname.startsWith('/api/cloud/')) return new Response('Not found', { status: 404 });
+    const response = await super.fetch(request);
+    const durableMutation = request.method === 'POST' && [
+      '/api/selection', '/api/priority', '/api/library/manual',
+      '/api/idle/start', '/api/idle/stop'
+    ].includes(pathname);
+    if (durableMutation && response.ok) {
+      // Read the authoritative Node runtime snapshot after the mutation.
+      // This avoids storing secrets or guessing how a request changed state.
+      try {
+        const snapshot = await this.containerFetch('http://localhost:3210/api/cloud/state');
+        if (snapshot.ok) {
+          await this.ctx.storage.put('cloud_idle_config_v1', normalizeCloudConfig(await snapshot.json()));
+        }
+      } catch (err) {
+        console.error('Unable to persist cloud idle state', String(err));
+        // A successful UI action is not proof it will survive a restart.
+        return new Response('Unable to persist cloud settings; retry the action', { status: 503 });
+      }
+    }
+    return response;
   }
 
   onStop({ exitCode, reason }: { exitCode?: number; reason?: string }) {
@@ -73,6 +110,7 @@ export default {
     if (!isAuthorized(request, env.O_IDLE_ACCESS_PASSWORD)) return unauthorized();
 
     const container = getContainer(env.O_STEAM_IDLE, 'primary');
+    if (new URL(request.url).pathname.startsWith('/api/cloud/')) return new Response('Not found', {status: 404});
     const response = await container.fetch(request);
     const headers = new Headers(response.headers);
     headers.set('X-Robots-Tag', 'noindex, nofollow');
