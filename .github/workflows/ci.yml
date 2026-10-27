@@ -48,6 +48,12 @@ jobs:
         working-directory: cloudflare
         run: npm install --no-audit --no-fund
 
+      - name: Test Cloudflare state normalization
+        working-directory: cloudflare
+        run: |
+          npx tsc --target es2022 --module commonjs --skipLibCheck --outDir /tmp/o-idle-cloud-test src/cloud-state.ts
+          node --input-type=commonjs -e "const assert=require('node:assert/strict');const {initialCloudConfig,normalizeCloudConfig}=require('/tmp/o-idle-cloud-test/cloud-state.js');const s=initialCloudConfig({O_IDLE_DEFAULT_APPIDS:'1,2,3',O_IDLE_PRIORITY_APPIDS:'2',O_IDLE_AUTO_START:'1'});assert.deepEqual(s.priorityAppIds,[2]);assert.equal(s.idleWanted,true);assert.equal(normalizeCloudConfig({...s,idleWanted:false}).idleWanted,false);"
+
       - name: Typecheck Cloudflare Worker
         working-directory: cloudflare
         run: npm run typecheck
