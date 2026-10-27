@@ -1434,6 +1434,10 @@ function startIdle(appids: unknown[]) {
     state.idleBatchCount = 0;
     throw err;
   }
+  if (cloudBootConfig) {
+    cloudBootConfig.idleWanted = state.idleWanted;
+    cloudBootConfig.desiredIdling = state.desiredIdling.slice();
+  }
   saveSettings();
 }
 
@@ -1451,6 +1455,10 @@ function stopIdle() {
   state.idleBatchIndex = 0;
   state.idleBatchCount = 0;
   state.idleRotationAt = null;
+  if (cloudBootConfig) {
+    cloudBootConfig.idleWanted = false;
+    cloudBootConfig.desiredIdling = [];
+  }
   state.message = 'Idle stopped';
   runtimeLog('INFO', 'Idle stopped');
 }
