@@ -172,6 +172,36 @@ function runtimeLog(level: 'INFO' | 'WARN' | 'ERROR', message: string) {
   try { fs.appendFileSync(LOG_FILE, `${line}\n`, 'utf8'); } catch (_) {}
 }
 
+type CloudBootstrap = {
+  selected: number[];
+  priorityAppIds: number[];
+  manualAppIds: number[];
+  desiredIdling: number[];
+  idleWanted: boolean;
+};
+let cloudBootConfig: CloudBootstrap | null = null;
+function normalizeCloudAppIds(values: unknown): number[] {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map(Number).filter(n => Number.isSafeInteger(n) && n > 0 && n <= 4294967295))].slice(0, 1000);
+}
+function tryCloudAutoStart() {
+  if (!CLOUD_MODE || !cloudBootConfig || !cloudBootConfig.idleWanted ||
+      !state.connected || !state.libraryReady || state.idleWanted || !steam) return;
+  const desired = cloudBootConfig.desiredIdling;
+  const missing = desired.filter(id => !library.some(a => a.appid === id));
+  if (missing.length) {
+    for (const id of missing) manualAppIds.add(id);
+    // Discovery may exclude F2P AppIDs; pending manual entries will be loaded
+    // when the library refresh completes. Don't discard desired selections.
+    refreshLibrary().then(() => {
+      const remaining = desired.filter(id => !library.some(a => a.appid === id));
+      if (remaining.length) runtimeLog('WARN', `Cloud auto-start: ${remaining.length} AppIDs unavailable in Steam library`);
+      try { startIdle(desired); } catch (err) { runtimeLog('WARN', `Cloud auto-start failed: ${err.message}`); }
+    }).catch(err => runtimeLog('WARN', `Cloud library restoration failed: ${err.message}`));
+    return;
+  }
+  try { startIdle(desired); } catch (err) { runtimeLog('WARN', `Cloud auto-start failed: ${err.message}`); }
+}
 let idleRestoreTimer = null;
 let idleRotationTimer = null;
 function cancelIdleRestore() {
@@ -448,7 +478,8 @@ function attachSteamEvents(client: any) {
     if (!state.libraryReady || !library.length) {
       refreshLibrary()
         .then(async () => {
-          if (AUTO_START && DEFAULT_APPIDS.length && !state.idleWanted && !state.externalPlaying) {
+          tryCloudAutoStart();
+          if (!CLOUD_MODE && AUTO_START && DEFAULT_APPIDS.length && !state.idleWanted && !state.externalPlaying) {
             try {
               startIdle(DEFAULT_APPIDS);
               runtimeLog('INFO', `Cloud/default auto-start armed ${DEFAULT_APPIDS.length} AppIDs`);
@@ -467,6 +498,8 @@ function attachSteamEvents(client: any) {
           state.libraryError = err.message;
           state.message = `Library error: ${err.message}`;
         });
+    } else if (CLOUD_MODE) {
+      tryCloudAutoStart();
     } else if (AUTO_START && DEFAULT_APPIDS.length && !state.idleWanted && !state.externalPlaying) {
       try { startIdle(DEFAULT_APPIDS); } catch (err) { runtimeLog('WARN', `Auto-start skipped: ${err.message}`); }
     }
@@ -1401,6 +1434,10 @@ function startIdle(appids: unknown[]) {
     state.idleBatchCount = 0;
     throw err;
   }
+  if (cloudBootConfig) {
+    cloudBootConfig.idleWanted = state.idleWanted;
+    cloudBootConfig.desiredIdling = state.desiredIdling.slice();
+  }
   saveSettings();
 }
 
@@ -1418,6 +1455,10 @@ function stopIdle() {
   state.idleBatchIndex = 0;
   state.idleBatchCount = 0;
   state.idleRotationAt = null;
+  if (cloudBootConfig) {
+    cloudBootConfig.idleWanted = false;
+    cloudBootConfig.desiredIdling = [];
+  }
   state.message = 'Idle stopped';
   runtimeLog('INFO', 'Idle stopped');
 }
@@ -1564,6 +1605,36 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end('ok');
       return;
+    }
+    if (CLOUD_MODE && req.method === 'GET' && req.url === '/api/cloud/state') {
+      return json(res, 200, {
+        version: 1, selected: state.selected, manualAppIds: [...manualAppIds],
+        priorityAppIds: [...priorityAppIds], desiredIdling: state.desiredIdling,
+        idleWanted: state.idleWanted
+      });
+    }
+    if (CLOUD_MODE && req.method === 'POST' && req.url === '/api/cloud/bootstrap') {
+      const incoming = await readJson(req);
+      const priority = normalizeCloudAppIds(incoming.priorityAppIds).slice(0, IDLE_MAX_CONCURRENT);
+      const selected = normalizeCloudAppIds([...normalizeCloudAppIds(incoming.selected), ...priority]);
+      const manual = normalizeCloudAppIds(incoming.manualAppIds);
+      const desired = normalizeCloudAppIds(incoming.desiredIdling);
+      cloudBootConfig = {
+        selected, priorityAppIds: priority, manualAppIds: manual,
+        desiredIdling: desired,
+        idleWanted: incoming.idleWanted === true && desired.length > 0
+      };
+      priorityAppIds = new Set(priority);
+      manualAppIds.clear();
+      for (const id of [...manual, ...desired]) manualAppIds.add(id);
+      state.selected = selected;
+      saveSettings();
+      runtimeLog('INFO', `Cloud preferences restored: ${selected.length} selected, ${priority.length} priority, auto-idle=${cloudBootConfig.idleWanted}`);
+      if (state.connected) {
+        if (state.libraryReady) tryCloudAutoStart();
+        else refreshLibrary().then(() => tryCloudAutoStart()).catch(err => runtimeLog('WARN', `Cloud bootstrap library: ${err.message}`));
+      }
+      return json(res, 200, { ok: true });
     }
     if (req.method === 'GET' && req.url === '/api/status') return json(res, 200, sanitizeState());
     if (req.method === 'GET' && req.url === '/api/diagnostics/recent') return json(res, 200, { events: diagnostics.recent() });
