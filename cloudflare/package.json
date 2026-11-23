@@ -7,7 +7,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:auth": "tsc --target es2022 --module es2022 --lib es2022,dom --skipLibCheck --outDir tests/.compiled src/access-auth.ts && node --test tests/access-auth.test.mjs"
   },
   "dependencies": {
     "@cloudflare/containers": "^0.3.7"
