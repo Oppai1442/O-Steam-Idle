@@ -118,8 +118,11 @@ export async function verifyAccessRequest(
       'jwk', key, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']
     );
     const signingInput = new TextEncoder().encode(parts[0] + '.' + parts[1]);
+    const signatureBytes = decodeUrlBase64(parts[2]);
+    const signature = new ArrayBuffer(signatureBytes.byteLength);
+    new Uint8Array(signature).set(signatureBytes);
     return crypto.subtle.verify(
-      { name: 'RSASSA-PKCS1-v1_5' }, verifyKey, decodeUrlBase64(parts[2]), signingInput
+      { name: 'RSASSA-PKCS1-v1_5' }, verifyKey, signature, signingInput
     );
   } catch {
     return false;
