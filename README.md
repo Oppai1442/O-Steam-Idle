@@ -83,6 +83,12 @@ Set `O_IDLE_ROTATE_MINUTES` to change the batch duration or `O_IDLE_MAX_CONCURRE
 
 Playtime shown in the UI is a Steam snapshot, not a local stopwatch. While idling, O-Steam-Idle refreshes that snapshot every 5 minutes by default (`O_IDLE_PLAYTIME_SYNC_MINUTES`). Steam can still publish playtime asynchronously, so an ACTIVE batch may not show an immediate counter change.
 
+## Cloudflare dashboard authentication (security branch)
+
+The Cloudflare Worker uses **Cloudflare Access with an exact owner-email allowlist**, independently verified Access JWTs, and HTTP Basic Auth as an additional layer. It denies requests by default if identity configuration is missing, including requests to the health/API endpoints. Authentication occurs before the Container is started or contacted.
+
+To activate, **enable a Cloudflare Access application for this Worker and configure runtime secrets** `O_IDLE_ACCESS_TEAM_DOMAIN`, `O_IDLE_ACCESS_AUD`, `O_IDLE_ALLOWED_EMAIL`, and `O_IDLE_ACCESS_PASSWORD` before deploying this branch. Enable passkeys/MFA, protect production and preview hosts, and see [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md) for the full checklist. No private email, password, or Steam token is committed to the repository.
+
 ## Cloudflare Container mode
 
 The repository includes a `Dockerfile` plus a Worker/Container deployment under `cloudflare/`.

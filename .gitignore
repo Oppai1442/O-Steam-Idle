@@ -9,3 +9,5 @@ data/*
 .env.*
 .wrangler/
 .DS_Store
+
+cloudflare/tests/.compiled/
