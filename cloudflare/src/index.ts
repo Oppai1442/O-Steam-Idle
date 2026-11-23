@@ -1,11 +1,15 @@
 import { Container, getContainer } from '@cloudflare/containers';
 import { env as workerEnv } from 'cloudflare:workers';
 import { initialCloudConfig, normalizeCloudConfig, type CloudIdleConfig } from './cloud-state';
+import { allowsBrowserMutation, verifyAccessRequest } from './access-auth';
 
 const BASIC_USER = 'o-steam-idle';
 
 interface Env {
-  O_IDLE_ACCESS_PASSWORD: string;
+  O_IDLE_ACCESS_PASSWORD?: string;
+  O_IDLE_ACCESS_TEAM_DOMAIN?: string;
+  O_IDLE_ACCESS_AUD?: string;
+  O_IDLE_ALLOWED_EMAIL?: string;
   O_IDLE_AUTO_START?: string;
   O_IDLE_DEFAULT_APPIDS?: string;
   O_IDLE_PRIORITY_APPIDS?: string;
@@ -99,26 +103,78 @@ function isAuthorized(request: Request, password?: string): boolean {
     if (split < 0) return false;
     const user = decoded.slice(0, split);
     const pass = decoded.slice(split + 1);
-    return user === BASIC_USER && pass === password;
+    if (user !== BASIC_USER) return false;
+    const expected = new TextEncoder().encode(password);
+    const provided = new TextEncoder().encode(pass);
+    let mismatch = expected.length ^ provided.length;
+    for (let i = 0; i < Math.max(expected.length, provided.length); i++) {
+      mismatch |= (expected[i] || 0) ^ (provided[i] || 0);
+    }
+    return mismatch === 0;
   } catch {
     return false;
   }
 }
 
+function securityHeaders(source?: Headers): Headers {
+  const headers = new Headers(source);
+  headers.set('Cache-Control', 'no-store');
+  headers.set('X-Robots-Tag', 'noindex, nofollow');
+  headers.set('X-Content-Type-Options', 'nosniff');
+  headers.set('X-Frame-Options', 'DENY');
+  headers.set('Referrer-Policy', 'no-referrer');
+  headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  headers.set('Content-Security-Policy',
+    "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; " +
+    "form-action 'self'; script-src 'self'; style-src 'self'; " +
+    "img-src 'self' data: https:; connect-src 'self'");
+  return headers;
+}
+
+function denied(message = 'Forbidden', status = 403): Response {
+  return new Response(message, {
+    status,
+    headers: securityHeaders(new Headers({ 'Content-Type': 'text/plain; charset=utf-8' }))
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (!isAuthorized(request, env.O_IDLE_ACCESS_PASSWORD)) return unauthorized();
+    // Apply on every route: dashboard, JSON API, health and Workers preview
+    // hostnames. A public URL alone must never grant access.
+    if (new URL(request.url).protocol !== 'https:') return denied('HTTPS required', 403);
+    const accessValid = await verifyAccessRequest(request, {
+      teamDomain: env.O_IDLE_ACCESS_TEAM_DOMAIN,
+      audience: env.O_IDLE_ACCESS_AUD,
+      allowedEmail: env.O_IDLE_ALLOWED_EMAIL
+    });
+    if (!accessValid) return denied('Cloudflare Access identity required');
+
+    // Extra defense: even a valid Access session must know the UI password.
+    if (!isAuthorized(request, env.O_IDLE_ACCESS_PASSWORD)) {
+      const response = unauthorized();
+      return new Response(response.body, {status: response.status, headers: securityHeaders(response.headers)});
+    }
+
+    const pathname = new URL(request.url).pathname;
+    if (pathname.startsWith('/api/cloud/')) return denied('Not found', 404);
+    if (!allowsBrowserMutation(request)) return denied('Cross-origin or unsupported request blocked', 403);
+
+    // Do not expose the Access assertion, Access cookies, or Basic Auth password
+    // to the less-trusted Node container. It has its own internal Steam tokens.
+    const forwardedHeaders = new Headers(request.headers);
+    forwardedHeaders.delete('Authorization');
+    forwardedHeaders.delete('Cookie');
+    forwardedHeaders.delete('Cf-Access-Jwt-Assertion');
+    forwardedHeaders.delete('Cf-Access-Authenticated-User-Email');
+    const forwarded = new Request(request, { headers: forwardedHeaders });
 
     const container = getContainer(env.O_STEAM_IDLE, 'primary');
-    if (new URL(request.url).pathname.startsWith('/api/cloud/')) return new Response('Not found', {status: 404});
-    const response = await container.fetch(request);
-    const headers = new Headers(response.headers);
-    headers.set('X-Robots-Tag', 'noindex, nofollow');
-    headers.set('Cache-Control', headers.get('Cache-Control') || 'no-store');
+    const response = await container.fetch(forwarded);
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
-      headers
+      headers: securityHeaders(response.headers)
     });
   }
 };
